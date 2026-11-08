@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  # Weekly scan: a newly published Go or dependency vulnerability fails the
+  # vulnerability job, which is the signal to bump go.mod's toolchain line.
+  schedule:
+    - cron: "17 6 * * 1"
 
 permissions:
   contents: read
@@ -11,6 +15,7 @@ permissions:
 jobs:
   check:
     name: Go (${{ matrix.os }})
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
