@@ -36,17 +36,19 @@ type Result struct {
 
 // Pool extracts lazily, retaining at most one clip per worker across retries.
 // Zero values use three workers, media.Processor and Client. Configuration and
-// input must not be mutated during Run. Callbacks run serially per Run and may
-// receive an already-canceled context.
+// input must not be mutated during Run. Callbacks may receive an
+// already-canceled context.
 type Pool struct {
 	Concurrency int
 	Extractor   ClipExtractor
 	Transcriber Transcriber
-	// OnComplete receives each valid response, including work drained after
-	// another chunk fails; it is not a completed-meeting signal.
+	// OnComplete receives each valid response, one at a time, including work
+	// drained after another chunk fails; it is not a completed-meeting signal.
 	OnComplete func(context.Context, Result) error
-	// OnProgress carries no upstream text or paths. Its errors cancel work but
-	// still let valid completions drain to OnComplete.
+	// OnProgress carries no upstream text or paths and is called one event at a
+	// time, but it may run concurrently with OnComplete; state shared by the two
+	// needs its own locking. Its errors cancel work but still let valid
+	// completions drain to OnComplete.
 	OnProgress func(context.Context, Progress) error
 	wait       func(context.Context, time.Duration) error
 	backoff    func(int) time.Duration

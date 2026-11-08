@@ -76,7 +76,7 @@ type normalized struct {
 }
 
 func (n normalized) duration() time.Duration {
-	return time.Duration(n.Samples/media.SampleRate)*time.Second + time.Duration(n.Samples%media.SampleRate)*time.Second/media.SampleRate
+	return media.SampleDuration(n.Samples)
 }
 
 type completed struct {

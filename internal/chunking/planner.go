@@ -19,10 +19,6 @@ const (
 	MaxChunkSamples = media.MaxChunkSamples
 	OverlapSamples  = media.SampleRate / 2
 	MinPauseSamples = int64(media.MinSilence) * media.SampleRate / int64(time.Second)
-	MaxRequestBytes = media.MaxRequestBytes
-	// Includes WAV headers and multipart framing; extraction/upload must verify
-	// actual sizes rather than treating this planning allowance as a measurement.
-	RequestHeadroom = media.RequestHeadroom
 	Pause           = "pause"
 	Forced          = "forced"
 	End             = "end"
@@ -43,9 +39,8 @@ type Chunk struct {
 
 // Milliseconds floor the absolute sample position. Internal boundaries are
 // millisecond-aligned; a sub-ms recording tail remains exact in EndSample.
-func (c Chunk) StartMS() int64            { return c.StartSample / (media.SampleRate / 1000) }
-func (c Chunk) EndMS() int64              { return c.EndSample / (media.SampleRate / 1000) }
-func (c Chunk) RequestBytesBudget() int64 { return (c.EndSample-c.StartSample)*2 + RequestHeadroom }
+func (c Chunk) StartMS() int64 { return c.StartSample / (media.SampleRate / 1000) }
+func (c Chunk) EndMS() int64   { return c.EndSample / (media.SampleRate / 1000) }
 
 type span struct{ start, end int64 }
 
@@ -56,7 +51,7 @@ func Plan(ctx context.Context, samples int64, timeline diarization.Timeline, sil
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if samples < 0 || timeline.Duration < 0 || samples != sampleCeil(timeline.Duration) {
+	if samples < 0 || timeline.Duration < 0 || samples != media.SamplesCeil(timeline.Duration) {
 		return nil, ErrPlan
 	}
 	pauses, err := confirmedPauses(ctx, timeline, silence, samples)
@@ -99,8 +94,8 @@ func Plan(ctx context.Context, samples int64, timeline diarization.Timeline, sil
 		}
 		chunk := Chunk{ID: fmt.Sprintf("chunk_%04d", len(chunks)+1), StartSample: start, EndSample: end,
 			OverlapSamples: max(0, previousEnd-start), Boundary: boundary}
-		if end-start > MaxChunkSamples || chunk.RequestBytesBudget() >= MaxRequestBytes {
-			return nil, fmt.Errorf("%w: chunk exceeds request budget", ErrPlan)
+		if end-start > MaxChunkSamples {
+			return nil, fmt.Errorf("%w: chunk exceeds the maximum length", ErrPlan)
 		}
 		chunks = append(chunks, chunk)
 		if len(chunks) > maxPlanChunks {
@@ -118,10 +113,6 @@ func sampleFloor(d time.Duration) int64 {
 	return int64(d/time.Second)*media.SampleRate + int64(d%time.Second)*media.SampleRate/int64(time.Second)
 }
 
-func sampleCeil(d time.Duration) int64 {
-	return int64(d/time.Second)*media.SampleRate + (int64(d%time.Second)*media.SampleRate+int64(time.Second)-1)/int64(time.Second)
-}
-
 func confirmedPauses(ctx context.Context, timeline diarization.Timeline, silence []media.Silence, samples int64) ([]span, error) {
 	speech := make([]span, 0, len(timeline.Segments))
 	for _, segment := range timeline.Segments {
@@ -132,7 +123,7 @@ func confirmedPauses(ctx context.Context, timeline diarization.Timeline, silence
 			return nil, ErrPlan
 		}
 		// Round activity outward and quiet evidence inward, never widening a pause.
-		speech = append(speech, span{sampleFloor(segment.Start), sampleCeil(segment.End)})
+		speech = append(speech, span{sampleFloor(segment.Start), media.SamplesCeil(segment.End)})
 	}
 	sort.Slice(speech, func(i, j int) bool { return speech[i].start < speech[j].start })
 	gaps := []span{}
@@ -157,7 +148,7 @@ func confirmedPauses(ctx context.Context, timeline diarization.Timeline, silence
 			return nil, ErrPlan
 		}
 		last = quiet.End
-		q := span{sampleCeil(quiet.Start), sampleFloor(quiet.End)}
+		q := span{media.SamplesCeil(quiet.Start), sampleFloor(quiet.End)}
 		for g < len(gaps) && gaps[g].end <= q.start {
 			g++
 		}

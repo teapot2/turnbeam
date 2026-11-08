@@ -2,7 +2,6 @@ package meta
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/media"
+	"github.com/teapot2/turnbeam/internal/testutil"
 )
 
 func clipFile(t *testing.T, samples int64) *media.Clip {
@@ -23,19 +23,7 @@ func clipFile(t *testing.T, samples int64) *media.Clip {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := make([]byte, 44)
-	copy(header, "RIFF")
-	binary.LittleEndian.PutUint32(header[4:], uint32(36+samples*2))
-	copy(header[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(header[16:], 16)
-	binary.LittleEndian.PutUint16(header[20:], 1)
-	binary.LittleEndian.PutUint16(header[22:], 1)
-	binary.LittleEndian.PutUint32(header[24:], media.SampleRate)
-	binary.LittleEndian.PutUint32(header[28:], media.SampleRate*2)
-	binary.LittleEndian.PutUint16(header[32:], 2)
-	binary.LittleEndian.PutUint16(header[34:], 16)
-	copy(header[36:], "data")
-	binary.LittleEndian.PutUint32(header[40:], uint32(samples*2))
+	header := testutil.WAVHeader(media.SampleRate, 1, samples)
 	if _, err := f.Write(header); err != nil {
 		t.Fatal(err)
 	}

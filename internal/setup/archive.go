@@ -12,6 +12,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/teapot2/turnbeam/internal/safeio"
 )
 
 type entry struct {
@@ -24,13 +26,19 @@ type entry struct {
 
 // readArchive builds a trusted inventory, optionally extracting into a fresh root.
 // Symlinks are created last; os.Root also confines all filesystem operations.
-func readArchive(ctx context.Context, source *os.File, prefix string, dest *os.Root) (map[string]entry, error) {
+func readArchive(ctx context.Context, source *os.File, prefix string, dest *os.Root) (_ map[string]entry, err error) {
 	gz, err := gzip.NewReader(source)
 	if err != nil {
 		return nil, fmt.Errorf("open runtime archive: %w", err)
 	}
 	defer gz.Close()
-	limited := &io.LimitedReader{R: contextReader{ctx, gz}, N: (128 << 20) + 1}
+	limited := &io.LimitedReader{R: safeio.Reader(ctx, gz), N: (128 << 20) + 1}
+	defer func() {
+		// The cap truncates the stream, which tar reports as a damaged archive.
+		if err != nil && limited.N <= 0 {
+			err = errors.New("runtime archive is larger than 128 MiB unpacked")
+		}
+	}()
 	tr := tar.NewReader(limited)
 	entries := make(map[string]entry)
 	for {
@@ -103,6 +111,15 @@ func readArchive(ctx context.Context, source *os.File, prefix string, dest *os.R
 	}
 	if limited.N == 0 || len(entries) == 0 {
 		return nil, errors.New("runtime archive is empty or exceeds extraction limits")
+	}
+	// A path through an archived symlink could resolve outside the checked
+	// layout, so no entry may sit inside a symlinked folder.
+	for name := range entries {
+		for dir := path.Dir(name); dir != "."; dir = path.Dir(dir) {
+			if entries[dir].kind == tar.TypeSymlink {
+				return nil, errors.New("runtime archive entry inside a symlinked folder")
+			}
+		}
 	}
 	if dest != nil {
 		for name, e := range entries {

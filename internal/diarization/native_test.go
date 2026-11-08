@@ -2,7 +2,6 @@ package diarization
 
 import (
 	"context"
-	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/media"
+	"github.com/teapot2/turnbeam/internal/testutil"
 )
 
 func TestNativeDiarization(t *testing.T) {
@@ -96,19 +96,7 @@ func TestNativeDiarization(t *testing.T) {
 func writeSilence(t *testing.T, path string) {
 	t.Helper()
 	const samples = 2 * media.SampleRate
-	data := make([]byte, 44+samples*2)
-	copy(data, "RIFF")
-	binary.LittleEndian.PutUint32(data[4:], uint32(len(data)-8))
-	copy(data[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(data[16:], 16)
-	binary.LittleEndian.PutUint16(data[20:], 1)
-	binary.LittleEndian.PutUint16(data[22:], 1)
-	binary.LittleEndian.PutUint32(data[24:], media.SampleRate)
-	binary.LittleEndian.PutUint32(data[28:], media.SampleRate*2)
-	binary.LittleEndian.PutUint16(data[32:], 2)
-	binary.LittleEndian.PutUint16(data[34:], 16)
-	copy(data[36:], "data")
-	binary.LittleEndian.PutUint32(data[40:], samples*2)
+	data := append(testutil.WAVHeader(media.SampleRate, 1, samples), make([]byte, samples*2)...)
 	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}

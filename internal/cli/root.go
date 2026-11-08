@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"runtime/debug"
 
 	"github.com/teapot2/turnbeam/internal/pipeline"
@@ -40,20 +39,20 @@ func Run(ctx context.Context, args []string, version string, stdout, stderr io.W
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 	if err := ctx.Err(); err != nil {
-		fmt.Fprintln(stderr, label, err)
+		fmt.Fprintln(stderr, label, canceledMessage(ctx, ""))
 		return exitCanceled
 	}
-	if err := root.ExecuteContext(ctx); err != nil {
+	if cmd, err := root.ExecuteContextC(ctx); err != nil {
+		name := ""
+		if cmd != nil {
+			name = cmd.Name()
+		}
 		var message string
-		code, message = reportFailure(ctx, err, code)
+		code, message = reportFailure(ctx, err, code, name)
 		fmt.Fprintln(stderr, label, message)
 		return code
 	}
 	return exitOK
-}
-
-func newRoot(version string, code *int) *cobra.Command {
-	return newRootWithTranscriber(version, code, os.Stdout, (pipeline.Runner{}).Run)
 }
 
 type transcribeFunc func(context.Context, string, pipeline.Options, io.Writer, io.Writer) error

@@ -9,7 +9,6 @@ import (
 	"net/textproto"
 	"os"
 	"sync/atomic"
-	"time"
 
 	"github.com/teapot2/turnbeam/internal/media"
 )
@@ -29,7 +28,7 @@ func (b *uploadBody) Read(p []byte) (int, error) {
 // Only framing lives in RAM. A SectionReader prevents file growth from expanding
 // an already-checked request; truncation is an upload error, never silent success.
 func upload(clip *media.Clip, model, mode string) (_ *uploadBody, _ string, _ int64, err error) {
-	if clip == nil || clip.Prepared == nil || clip.StartSample < 0 || clip.EndSample <= clip.StartSample || clip.Samples <= 0 || clip.Samples > media.MaxChunkSamples || clip.EndSample-clip.StartSample != clip.Samples || clip.Duration != time.Duration(clip.Samples)*time.Second/media.SampleRate || clip.Bytes < 44+clip.Samples*2 || clip.Bytes >= media.MaxRequestBytes-media.RequestHeadroom {
+	if clip == nil || clip.Prepared == nil || clip.StartSample < 0 || clip.EndSample <= clip.StartSample || clip.Samples <= 0 || clip.Samples > media.MaxChunkSamples || clip.EndSample-clip.StartSample != clip.Samples || clip.Duration != media.SampleDuration(clip.Samples) || clip.Bytes < 44+clip.Samples*2 || clip.Bytes >= media.MaxRequestBytes-media.RequestHeadroom {
 		return nil, "", 0, media.ErrInvalidMedia
 	}
 	f, err := os.Open(clip.Path)

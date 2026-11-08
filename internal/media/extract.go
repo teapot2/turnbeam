@@ -106,6 +106,6 @@ func (p Processor) Extract(ctx context.Context, recording *Prepared, start, end 
 		return nil, err
 	}
 	complete = true
-	return &Clip{Prepared: &Prepared{Path: output, Source: recording.Source, Samples: count, Duration: sampleDuration(count), dir: dir},
+	return &Clip{Prepared: &Prepared{Path: output, Source: recording.Source, Samples: count, Duration: SampleDuration(count), dir: dir},
 		StartSample: start, EndSample: end, Bytes: stat.Size()}, nil
 }

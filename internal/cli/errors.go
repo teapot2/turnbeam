@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -33,15 +34,22 @@ const (
 	storage       errorClass = "storage"
 )
 
+type rule struct {
+	target error
+	class  errorClass
+}
+
+// cleanupFailures may leave partial data behind, so they are reported first
+// and still mentioned when the run was canceled.
+var cleanupFailures = []rule{
+	{output.ErrCleanup, storage}, {output.ErrCommit, storage},
+	{media.ErrCleanup, storage}, {diarization.ErrCleanup, storage}, {setup.ErrCleanup, storage}, {subprocess.ErrCleanup, processing},
+}
+
 // Classification uses typed causes, never upstream Error() text. Keep detailed
 // causes in processing packages for errors.Is/As, not in terminal diagnostics.
 func classify(err error) (errorClass, string) {
-	for _, rule := range []struct {
-		target error
-		class  errorClass
-	}{
-		{output.ErrCleanup, storage}, {output.ErrCommit, storage},
-		{media.ErrCleanup, storage}, {diarization.ErrCleanup, storage}, {setup.ErrCleanup, storage}, {subprocess.ErrCleanup, processing},
+	for _, rule := range append(slices.Clone(cleanupFailures), []rule{
 		{output.ErrConflict, storage}, {output.ErrSourceChanged, storage},
 		{jobs.ErrCorrupt, configuration}, {jobs.ErrMismatch, configuration}, {jobs.ErrMissing, configuration}, {jobs.ErrBusy, configuration},
 		{credentials.ErrMissing, configuration}, {credentials.ErrInvalid, configuration}, {credentials.ErrTerminal, configuration},
@@ -58,7 +66,7 @@ func classify(err error) (errorClass, string) {
 		{media.ErrNoAudio, configuration}, {media.ErrInvalidMedia, processing}, {media.ErrChunkSize, processing},
 		{diarization.ErrRTTM, processing}, {chunking.ErrPlan, processing},
 		{meta.ErrRetryLater, remote},
-	} {
+	}...) {
 		if errors.Is(err, rule.target) {
 			return rule.class, rule.target.Error()
 		}
@@ -89,11 +97,11 @@ func classify(err error) (errorClass, string) {
 	return processing, "operation failed; check the input and run doctor to verify local dependencies"
 }
 
-func reportFailure(ctx context.Context, err error, code int) (int, string) {
+func reportFailure(ctx context.Context, err error, code int, command string) (int, string) {
 	if ctx.Err() != nil {
-		message := ctx.Err().Error()
+		message := canceledMessage(ctx, command)
 		// Cancellation must not hide an incomplete rollback or uncertain commit.
-		if errors.Is(err, output.ErrCleanup) || errors.Is(err, output.ErrCommit) || errors.Is(err, media.ErrCleanup) || errors.Is(err, diarization.ErrCleanup) || errors.Is(err, setup.ErrCleanup) || errors.Is(err, subprocess.ErrCleanup) {
+		if slices.ContainsFunc(cleanupFailures, func(r rule) bool { return errors.Is(err, r.target) }) {
 			_, detail := classify(err)
 			message += "; " + detail
 		}
@@ -125,4 +133,19 @@ func safeUsage(message string) string {
 		}
 	}
 	return safe.String()
+}
+
+// canceledMessage tells people how to continue after Ctrl-C. An expired
+// deadline keeps its own wording, since nobody pressed anything.
+func canceledMessage(ctx context.Context, command string) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return ctx.Err().Error()
+	}
+	switch command {
+	case "turnbeam":
+		return "canceled; completed chunks are saved, so run the same command with --resume to continue"
+	case "setup":
+		return "canceled; run `turnbeam setup` again to resume the download"
+	}
+	return "canceled"
 }

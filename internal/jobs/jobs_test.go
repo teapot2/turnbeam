@@ -363,3 +363,46 @@ func TestNewRunKeepsResumePointerUntilFirstResult(t *testing.T) {
 		t.Fatal("first saved result did not make the new generation resumable")
 	}
 }
+
+func TestTimelineIsParsedOnceAndCallersGetCopies(t *testing.T) {
+	f := newFixture(t)
+	j := f.open(t, false)
+	f.seed(t, j)
+	first, ok, err := j.Diarization(context.Background())
+	if err != nil || !ok || len(first.Segments) == 0 {
+		t.Fatal(err)
+	}
+	cached := j.parsed
+	first.Segments[0].Start = time.Hour
+	second, _, err := j.Diarization(context.Background())
+	if err != nil || j.parsed != cached || second.Segments[0].Start == time.Hour {
+		t.Fatal("timeline was reparsed or a caller's edit leaked into the cache")
+	}
+}
+
+func TestTranscribeReusesThisSessionsMediaCheck(t *testing.T) {
+	f := newFixture(t)
+	j := f.open(t, false)
+	f.seed(t, j)
+	if !j.alreadyChecked(f.recording) {
+		t.Fatal("seeded media check was not recorded")
+	}
+	other := *f.recording
+	other.Path += ".other"
+	if j.alreadyChecked(&other) || j.alreadyChecked(nil) {
+		t.Fatal("a different recording counted as checked")
+	}
+	// The original changing after the check must not matter: the uploaded audio
+	// is the normalized file that was verified against the checkpoint.
+	if err := os.WriteFile(f.input, []byte("changed after normalization"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	pool := fakePool(t)
+	pool.Transcriber = transcribeFunc(func(_ context.Context, c *media.Clip, _, _ string) (*meta.Response, error) {
+		return response(f.plan[c.StartSample/media.SampleRate]).Response, nil
+	})
+	rows, err := j.Transcribe(context.Background(), pool, f.recording, "not-a-real-key")
+	if err != nil || len(rows) != len(f.plan) {
+		t.Fatal("transcription rehashed media or lost results", err)
+	}
+}

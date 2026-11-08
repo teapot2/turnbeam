@@ -797,3 +797,102 @@ func TestInstallOrderCacheAndCleanup(t *testing.T) {
 		}
 	}
 }
+
+// zeroArchive writes members of the given sizes filled with zeros; a negative
+// count of written bytes leaves the last member's body out entirely.
+func zeroArchive(t *testing.T, prefix string, sizes []int64, writeBodies bool) []byte {
+	t.Helper()
+	var data bytes.Buffer
+	gz, _ := gzip.NewWriterLevel(&data, gzip.BestSpeed)
+	tw := tar.NewWriter(gz)
+	zeros := make([]byte, 1<<20)
+	for i, size := range sizes {
+		if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("%s/f%d", prefix, i), Typeflag: tar.TypeReg, Mode: 0644, Size: size}); err != nil {
+			t.Fatal(err)
+		}
+		for written := int64(0); writeBodies && written < size; {
+			n, err := tw.Write(zeros[:min(int64(len(zeros)), size-written)])
+			if err != nil {
+				t.Fatal(err)
+			}
+			written += int64(n)
+		}
+	}
+	tw.Close() // reports the missing body when writeBodies is false; the header is what matters
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return data.Bytes()
+}
+
+func TestArchiveLimits(t *testing.T) {
+	prefix := pinnedCatalog().prefix
+	many := []member{{name: prefix + "/", kind: tar.TypeDir, mode: 0755}}
+	for i := range 512 {
+		many = append(many, member{name: fmt.Sprintf("%s/f%d", prefix, i), kind: tar.TypeReg, body: "x"})
+	}
+	if _, err := readArchive(context.Background(), tempArchive(t, zeroArchive(t, prefix, []int64{63 << 20, 63 << 20}, true)), prefix, nil); err != nil {
+		t.Fatal("an archive under the size limit was rejected", err)
+	}
+	for name, archive := range map[string]func() []byte{
+		"duplicate entry": func() []byte {
+			return archiveBytes(t, []member{{name: prefix + "/a", kind: tar.TypeReg, body: "1"}, {name: prefix + "/a", kind: tar.TypeReg, body: "2"}})
+		},
+		"more than 512 entries": func() []byte { return archiveBytes(t, many) },
+		"member over 64 MiB":    func() []byte { return zeroArchive(t, prefix, []int64{64<<20 + 1}, false) },
+		"over 128 MiB unpacked": func() []byte { return zeroArchive(t, prefix, []int64{63 << 20, 63 << 20, 63 << 20}, true) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "archive")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if _, err := file.Write(archive()); err != nil {
+				t.Fatal(err)
+			}
+			file.Seek(0, io.SeekStart)
+			_, err = readArchive(context.Background(), file, prefix, nil)
+			if err == nil || !strings.Contains(err.Error(), map[string]string{
+				"duplicate entry": "duplicate", "more than 512 entries": "entry count",
+				"member over 64 MiB": "member is too large", "over 128 MiB unpacked": "larger than 128 MiB",
+			}[name]) {
+				t.Fatal("archive beyond the limits was not rejected for that limit:", err)
+			}
+		})
+	}
+}
+
+func tempArchive(t *testing.T, data []byte) *os.File {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "archive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+	if _, err := file.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	file.Seek(0, io.SeekStart)
+	return file
+}
+
+func TestArchiveRejectsEntriesUnderSymlinkedFolders(t *testing.T) {
+	prefix := pinnedCatalog().prefix
+	for name, members := range map[string][]member{
+		"file under a symlink": {{name: prefix + "/p", kind: tar.TypeSymlink, link: "."}, {name: prefix + "/p/q", kind: tar.TypeReg, body: "x"}},
+		"link under a symlink": {{name: prefix + "/p", kind: tar.TypeSymlink, link: "."}, {name: prefix + "/p/p/p/q", kind: tar.TypeSymlink, link: "../../../z"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			_, err = readArchive(context.Background(), tempArchive(t, archiveBytes(t, members)), prefix, root)
+			if err == nil || !strings.Contains(err.Error(), "symlinked folder") {
+				t.Fatal("entry under a symlinked folder was accepted:", err)
+			}
+		})
+	}
+}

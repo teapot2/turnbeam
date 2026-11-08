@@ -89,7 +89,7 @@ func TestExtractionRejectsBadRangesBeforeIO(t *testing.T) {
 			t.Fatalf("invalid recording accepted: %+v, %v", clip, err)
 		}
 	}
-	source := &Prepared{Samples: MaxChunkSamples + 1, Duration: sampleDuration(MaxChunkSamples + 1)}
+	source := &Prepared{Samples: MaxChunkSamples + 1, Duration: SampleDuration(MaxChunkSamples + 1)}
 	for _, r := range [][2]int64{{-1, 1}, {1, 1}, {2, 1}, {0, source.Samples + 1}, {math.MinInt64, math.MaxInt64}, {0, math.MaxInt64}} {
 		if clip, err := p.Extract(context.Background(), source, r[0], r[1]); clip != nil || !errors.Is(err, ErrInvalidMedia) {
 			t.Fatalf("bad range accepted: %+v, %v", clip, err)

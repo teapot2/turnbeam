@@ -71,13 +71,6 @@ func (a Adapter) Diarize(ctx context.Context, recording *media.Prepared) (_ *Res
 	if !stat.Mode().IsRegular() || stat.Size() < 44 || recording.Samples > (stat.Size()-44)/2 {
 		return nil, errors.New("prepared recording is nonregular or truncated")
 	}
-	file, err := os.Open(input)
-	if err != nil {
-		return nil, fmt.Errorf("open normalized recording: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("close normalized recording: %w", err)
-	}
 	ready := a.ready
 	if ready == nil {
 		ready = (setup.Manager{Dir: a.InstallDir}).Ready
@@ -121,7 +114,7 @@ func (a Adapter) Diarize(ctx context.Context, recording *media.Prepared) (_ *Res
 	if !stat.Mode().IsRegular() || stat.Size() > maxRTTMBytes {
 		return nil, fmt.Errorf("%w: nonregular or oversized output", ErrRTTM)
 	}
-	file, err = os.Open(partial)
+	file, err := os.Open(partial)
 	if err != nil {
 		return nil, fmt.Errorf("open native RTTM: %w", err)
 	}

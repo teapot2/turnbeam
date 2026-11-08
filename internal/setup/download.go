@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"github.com/teapot2/turnbeam/internal/safeio"
 )
 
 // ErrIntegrity identifies artifacts that do not match the trusted pins.
@@ -19,21 +21,9 @@ var ErrIntegrity = errors.New("installation integrity check failed")
 // ErrDownload identifies a failed or rejected artifact download.
 var ErrDownload = errors.New("download failed; check network access and rerun setup")
 
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.r.Read(p)
-}
-
 func digest(ctx context.Context, r io.Reader, size int64) (string, error) {
 	h := sha256.New()
-	n, err := io.Copy(h, io.LimitReader(contextReader{ctx, r}, size+1))
+	n, err := io.Copy(h, io.LimitReader(safeio.Reader(ctx, r), size+1))
 	if err != nil {
 		return "", err
 	}
@@ -237,7 +227,7 @@ func (m Manager) downloadOnce(ctx context.Context, root *os.Root, a artifact, at
 		m.OnProgress(event)
 		body = &countingReader{r: body, done: offset, event: event, emit: m.OnProgress}
 	}
-	written, copyErr := io.Copy(f, io.LimitReader(contextReader{ctx, body}, a.size-offset+1))
+	written, copyErr := io.Copy(f, io.LimitReader(safeio.Reader(ctx, body), a.size-offset+1))
 	if err := errors.Join(copyErr, f.Sync(), f.Close()); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()

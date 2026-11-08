@@ -91,7 +91,7 @@ func verifyExtractedPCM(t *testing.T, ctx context.Context, p media.Processor, re
 			t.Fatal(err)
 		}
 		defer clip.Close()
-		if clip.StartSample != c.StartSample || clip.EndSample != c.EndSample || clip.Samples != c.EndSample-c.StartSample || clip.Bytes+RequestHeadroom >= MaxRequestBytes {
+		if clip.StartSample != c.StartSample || clip.EndSample != c.EndSample || clip.Samples != c.EndSample-c.StartSample || clip.Bytes+media.RequestHeadroom >= media.MaxRequestBytes {
 			t.Fatalf("extracted metadata differs from plan: %+v", clip)
 		}
 		want, got := sha256.New(), sha256.New()

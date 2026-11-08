@@ -25,6 +25,7 @@ import (
 	"github.com/teapot2/turnbeam/internal/media"
 	"github.com/teapot2/turnbeam/internal/meta"
 	"github.com/teapot2/turnbeam/internal/output"
+	"github.com/teapot2/turnbeam/internal/testutil"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
@@ -66,21 +67,8 @@ func generatedWAV(path string, samples, offset int64) error {
 	if err != nil {
 		return err
 	}
-	var header [52]byte
-	copy(header[:], "RIFF")
-	binary.LittleEndian.PutUint32(header[4:], uint32(36+samples*2))
-	copy(header[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(header[16:], 16)
-	binary.LittleEndian.PutUint16(header[20:], 1)
-	binary.LittleEndian.PutUint16(header[22:], 1)
-	binary.LittleEndian.PutUint32(header[24:], media.SampleRate)
-	binary.LittleEndian.PutUint32(header[28:], media.SampleRate*2)
-	binary.LittleEndian.PutUint16(header[32:], 2)
-	binary.LittleEndian.PutUint16(header[34:], 16)
-	copy(header[36:], "data")
-	binary.LittleEndian.PutUint32(header[40:], uint32(samples*2))
-	binary.LittleEndian.PutUint64(header[44:], uint64(offset))
-	_, writeErr := f.Write(header[:])
+	header := binary.LittleEndian.AppendUint64(testutil.WAVHeader(media.SampleRate, 1, samples), uint64(offset))
+	_, writeErr := f.Write(header)
 	return errors.Join(writeErr, f.Truncate(44+samples*2), f.Close())
 }
 

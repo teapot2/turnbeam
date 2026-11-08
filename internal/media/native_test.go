@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/teapot2/turnbeam/internal/testutil"
 )
 
 func TestNativeMedia(t *testing.T) {
@@ -121,19 +123,7 @@ func writeWAV(t *testing.T, path string, rate, channels int, silent bool) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	header := make([]byte, 44)
-	copy(header, "RIFF")
-	binary.LittleEndian.PutUint32(header[4:], uint32(36+rate*2*channels*2))
-	copy(header[8:], "WAVEfmt ")
-	binary.LittleEndian.PutUint32(header[16:], 16)
-	binary.LittleEndian.PutUint16(header[20:], 1)
-	binary.LittleEndian.PutUint16(header[22:], uint16(channels))
-	binary.LittleEndian.PutUint32(header[24:], uint32(rate))
-	binary.LittleEndian.PutUint32(header[28:], uint32(rate*channels*2))
-	binary.LittleEndian.PutUint16(header[32:], uint16(channels*2))
-	binary.LittleEndian.PutUint16(header[34:], 16)
-	copy(header[36:], "data")
-	binary.LittleEndian.PutUint32(header[40:], uint32(rate*2*channels*2))
+	header := testutil.WAVHeader(rate, channels, int64(rate*2))
 	if _, err := f.Write(header); err != nil {
 		t.Fatal(err)
 	}

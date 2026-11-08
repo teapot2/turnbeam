@@ -75,13 +75,16 @@ func shape(data json.RawMessage, typ reflect.Type) error {
 			return ErrInvalid
 		}
 		for i := 0; i < typ.NumField(); i++ {
-			name, option, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
-			if name == "-" {
+			name, optional, skip, err := jsonField(typ.Field(i))
+			if err != nil {
+				return err
+			}
+			if skip {
 				continue
 			}
 			value, exists := fields[name]
 			if !exists {
-				if option != "omitempty" {
+				if !optional {
 					return ErrInvalid
 				}
 				continue
@@ -153,4 +156,29 @@ func scan(d *json.Decoder, depth int) error {
 		_, err = d.Token()
 	}
 	return err
+}
+
+// errEmbedded reports a schema this package cannot check: encoding/json
+// flattens embedded struct fields into their parent object.
+var errEmbedded = errors.New("jsonstrict: embedded struct fields are not supported")
+
+// jsonField mirrors encoding/json's naming: the tag name, or the Go field name
+// when untagged. Unexported and "-" fields are skipped; omitempty and omitzero
+// make a field optional wherever they appear among the tag options.
+func jsonField(f reflect.StructField) (name string, optional, skip bool, err error) {
+	if f.Anonymous {
+		return "", false, false, errEmbedded
+	}
+	tag := f.Tag.Get("json")
+	if !f.IsExported() || tag == "-" {
+		return "", false, true, nil
+	}
+	name, options, _ := strings.Cut(tag, ",")
+	if name == "" {
+		name = f.Name
+	}
+	for option := range strings.SplitSeq(options, ",") {
+		optional = optional || option == "omitempty" || option == "omitzero"
+	}
+	return name, optional, false, nil
 }

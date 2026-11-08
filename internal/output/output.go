@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/filelock"
+	"github.com/teapot2/turnbeam/internal/safeio"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
@@ -127,7 +128,7 @@ func openDestination(ctx context.Context, path string, opts transcript.RenderOpt
 		return nil, err
 	}
 	d.link, d.remove = d.root.Link, d.root.Remove
-	d.sync = func() error { return syncDir(d.root) }
+	d.sync = func() error { return safeio.SyncDir(d.root) }
 	d.stageFile = d.writeStage
 	// Probe the same filesystem operation used for final no-clobber publication.
 	if _, err = d.writeStage(ctx, "probe", nil); err != nil {
@@ -144,9 +145,7 @@ func openDestination(ctx context.Context, path string, opts transcript.RenderOpt
 
 func newStage(root *os.Root) (string, error) {
 	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return "", err
-	}
+	rand.Read(nonce[:]) // never fails since Go 1.24
 	name := ".turnbeam-output-" + hex.EncodeToString(nonce[:])
 	if err := root.Mkdir(name, 0700); err != nil {
 		return "", err
@@ -154,32 +153,12 @@ func newStage(root *os.Root) (string, error) {
 	return name, nil
 }
 
-func syncDir(root *os.Root) error {
-	f, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	return errors.Join(f.Sync(), f.Close())
-}
-
-type reader struct {
-	ctx    context.Context
-	source io.Reader
-}
-
-func (r reader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.source.Read(p)
-}
-
 func (d *Destination) writeStage(ctx context.Context, name string, data []byte) (os.FileInfo, error) {
 	f, err := d.root.OpenFile(filepath.Join(d.stage, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, err
 	}
-	_, writeErr := io.Copy(f, reader{ctx, bytes.NewReader(data)})
+	_, writeErr := io.Copy(f, safeio.Reader(ctx, bytes.NewReader(data)))
 	info, statErr := f.Stat()
 	err = errors.Join(writeErr, statErr, f.Sync(), f.Close(), ctx.Err())
 	return info, err
@@ -205,7 +184,7 @@ func (d *Destination) Write(ctx context.Context, input *transcript.Transcript) (
 		}
 	}
 	if d.root == nil {
-		_, err = io.Copy(d.stdout, reader{ctx, bytes.NewReader(data)})
+		_, err = io.Copy(d.stdout, safeio.Reader(ctx, bytes.NewReader(data)))
 		return errors.Join(err, ctx.Err())
 	}
 	// Coordinate publication with offline name edits. The lock is short-lived:

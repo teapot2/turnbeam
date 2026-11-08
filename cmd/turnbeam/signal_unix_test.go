@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -53,6 +54,15 @@ func (s *signalTranscriber) Transcribe(_ context.Context, c *media.Clip, _, _ st
 // Test-only dispatch supplies local tools and a local HTTP service. Production
 // has no endpoint/environment override. The app helper executes the real run().
 func TestMain(m *testing.M) {
+	if os.Getenv("TURNBEAM_FORCE_HELPER") == "1" {
+		ctx, stop := signalContext()
+		defer stop()
+		fmt.Println("ready")
+		<-ctx.Done()
+		fmt.Println("canceled")
+		time.Sleep(time.Minute) // cleanup that hangs
+		os.Exit(0)
+	}
 	if os.Getenv("TURNBEAM_SIGNAL_HELPER") == "1" {
 		switch filepath.Base(os.Args[0]) {
 		case "ffprobe", "ffmpeg":
@@ -183,7 +193,7 @@ func testSignals(t *testing.T, parent context.Context, binary string) {
 				}
 				err = testutil.WaitError(t, done)
 				var exit *exec.ExitError
-				if !errors.As(err, &exit) || exit.ExitCode() != 130 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Error: context canceled") || strings.Contains(stderr.String(), "fake-private-signal-key") || strings.Contains(stderr.String(), "private native") {
+				if !errors.As(err, &exit) || exit.ExitCode() != 130 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "Error: canceled; completed chunks are saved, so run the same command with --resume to continue") || strings.Contains(stderr.String(), "fake-private-signal-key") || strings.Contains(stderr.String(), "private native") {
 					t.Fatal("signal did not cancel safely", err, stderr.String())
 				}
 				for _, path := range []string{temp, out} {
@@ -248,5 +258,60 @@ func seedSignalCheckpoint(t *testing.T, input, cache string) {
 	hash := sha256.Sum256(make([]byte, 44+24000*2))
 	if err = j.SaveResult(ctx, meta.Result{Chunk: plan[0], Attempts: 1, AudioSHA256: hex.EncodeToString(hash[:]), Response: &meta.Response{SessionID: "saved-session", Transcript: "Saved.", AudioDurationMS: 1000, Turns: []transcript.RawTurn{{StartMS: 200, EndMS: 800, Transcript: "Saved."}}}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSecondInterruptForcesExit(t *testing.T) {
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "TURNBEAM_FORCE_HELPER=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer cmd.Process.Kill()
+	lines := make(chan string, 2)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+	expect := func(want string) {
+		t.Helper()
+		select {
+		case got := <-lines:
+			if got != want {
+				t.Fatalf("helper said %q, want %q", got, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("helper never said %q", want)
+		}
+	}
+	expect("ready")
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+	expect("canceled")
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGINT {
+				t.Fatalf("second Ctrl-C did not terminate the process: %v", err)
+			}
+			return
+		case <-tick.C:
+			cmd.Process.Signal(os.Interrupt)
+		case <-deadline:
+			t.Fatal("a second Ctrl-C was ignored while cleanup hung")
+		}
 	}
 }

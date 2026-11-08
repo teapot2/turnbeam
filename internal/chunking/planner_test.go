@@ -64,7 +64,7 @@ func assertCoverage(t *testing.T, chunks []Chunk, samples int64) {
 	t.Helper()
 	var end int64
 	for i, c := range chunks {
-		if c.ID != fmt.Sprintf("chunk_%04d", i+1) || c.StartSample < 0 || c.StartSample >= c.EndSample || c.StartSample > end || c.EndSample > samples || c.EndSample-c.StartSample > MaxChunkSamples || c.RequestBytesBudget() >= MaxRequestBytes {
+		if c.ID != fmt.Sprintf("chunk_%04d", i+1) || c.StartSample < 0 || c.StartSample >= c.EndSample || c.StartSample > end || c.EndSample > samples || c.EndSample-c.StartSample > MaxChunkSamples {
 			t.Fatalf("invalid coverage or limits: %+v", c)
 		}
 		wantOverlap := int64(0)
@@ -138,7 +138,7 @@ func TestSubSampleEvidenceIsConservative(t *testing.T) {
 
 func TestPlanResourceBound(t *testing.T) {
 	duration := time.Duration(maxPlanChunks+1) * 9 * time.Minute
-	if chunks, err := Plan(context.Background(), sampleCeil(duration), diarization.Timeline{Duration: duration}, nil); chunks != nil || !errors.Is(err, ErrPlan) {
+	if chunks, err := Plan(context.Background(), media.SamplesCeil(duration), diarization.Timeline{Duration: duration}, nil); chunks != nil || !errors.Is(err, ErrPlan) {
 		t.Fatalf("unbounded plan accepted: %d chunks, %v", len(chunks), err)
 	}
 }
@@ -157,7 +157,7 @@ func FuzzPlan(f *testing.F) {
 		sEnd := sStart + (duration-sStart)*time.Duration(int(data[4])+1)/256
 		timeline := diarization.Timeline{Duration: duration, Segments: []diarization.Segment{speech(sStart, sEnd)}}
 		quiet := []media.Silence{{Start: qStart, End: qEnd}}
-		samples := sampleCeil(duration)
+		samples := media.SamplesCeil(duration)
 		chunks, err := Plan(context.Background(), samples, timeline, quiet)
 		if err != nil {
 			t.Fatal(err)
@@ -167,9 +167,15 @@ func FuzzPlan(f *testing.F) {
 			if c.Boundary != Pause {
 				continue
 			}
-			if c.EndSample < sampleCeil(qStart)+MinPauseSamples/2 || c.EndSample > sampleFloor(qEnd)-MinPauseSamples/2 || c.EndSample > sampleFloor(sStart)-MinPauseSamples/2 && c.EndSample < sampleCeil(sEnd)+MinPauseSamples/2 {
+			if c.EndSample < media.SamplesCeil(qStart)+MinPauseSamples/2 || c.EndSample > sampleFloor(qEnd)-MinPauseSamples/2 || c.EndSample > sampleFloor(sStart)-MinPauseSamples/2 && c.EndSample < media.SamplesCeil(sEnd)+MinPauseSamples/2 {
 				t.Fatalf("unsafe pause: %+v, quiet=%+v speech=%+v", c, quiet, timeline.Segments)
 			}
 		}
 	})
+}
+
+func TestLongestChunkFitsOneRequest(t *testing.T) {
+	if MaxChunkSamples*2+media.RequestHeadroom >= media.MaxRequestBytes {
+		t.Fatal("a maximum-length chunk would exceed Meta's request size limit")
+	}
 }

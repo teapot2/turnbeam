@@ -37,7 +37,7 @@ func DefaultPolicy() Policy {
 // Align attributes complete assembled turns against one full-recording timeline.
 // It never splits, retimes or rewrites text, and ignores request-local Meta labels.
 // Returned data is detached; errors/cancellation return no partial transcript.
-// Existing display names survive only an identical ordered global-ID mapping.
+// Input must come straight from Assemble, without speakers.
 func Align(ctx context.Context, input *transcript.Transcript, timeline diarization.Timeline, policy Policy) (*transcript.Transcript, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -57,22 +57,12 @@ func Align(ctx context.Context, input *transcript.Transcript, timeline diarizati
 		return nil, err
 	}
 	if len(input.Speakers) != 0 {
-		if len(input.Speakers) != len(timeline.Speakers) {
-			return nil, fmt.Errorf("%w: existing global speaker mapping changed", ErrAlignment)
-		}
-		for i, speaker := range input.Speakers {
-			if speaker.ID != timeline.Speakers[i].ID || speaker.Index != timeline.Speakers[i].Index {
-				return nil, fmt.Errorf("%w: existing global speaker mapping changed", ErrAlignment)
-			}
-		}
+		return nil, fmt.Errorf("%w: input is already aligned", ErrAlignment)
 	}
 	out := *input
 	out.Speakers = make([]transcript.Speaker, len(timeline.Speakers))
 	for i, speaker := range timeline.Speakers {
 		out.Speakers[i] = transcript.Speaker{ID: speaker.ID, Index: speaker.Index}
-		if len(input.Speakers) != 0 {
-			out.Speakers[i].Name = copyString(input.Speakers[i].Name)
-		}
 	}
 	out.SourceChunks = make([]transcript.SourceChunk, len(input.SourceChunks))
 	for i, c := range input.SourceChunks {

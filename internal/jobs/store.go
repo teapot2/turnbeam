@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/teapot2/turnbeam/internal/diarization"
 	"github.com/teapot2/turnbeam/internal/filelock"
 	"github.com/teapot2/turnbeam/internal/jsonstrict"
 	"github.com/teapot2/turnbeam/internal/media"
+	"github.com/teapot2/turnbeam/internal/safeio"
 )
 
 // Job holds an exclusive recovery slot until Close. Files contain private speech;
@@ -28,6 +30,15 @@ type Job struct {
 	// pendingPointer names a new generation that --resume must not select until
 	// it holds a transcription result, so an earlier run's paid work stays reachable.
 	pendingPointer string
+	// checked identifies the normalized recording CheckMedia verified, so the
+	// same file is not hashed again within this session.
+	checked struct {
+		path    string
+		samples int64
+	}
+	// parsed caches the timeline of the committed RTTM with this checksum.
+	parsed     *diarization.Timeline
+	parsedFrom string
 }
 
 // DefaultDir separates recoverable speech data from durable managed models.
@@ -83,7 +94,7 @@ func Open(ctx context.Context, input string, settings Settings, opts Options) (_
 		if !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
-	} else if err := syncDir(base); err != nil {
+	} else if err := safeio.SyncDir(base); err != nil {
 		return nil, err
 	}
 	stat, err = base.Lstat(name)
@@ -152,15 +163,12 @@ func Open(ctx context.Context, input string, settings Settings, opts Options) (_
 		if j.m.InputSHA256 != inputHash || j.m.Settings != settings {
 			return nil, ErrMismatch
 		}
-		if err := j.verify(ctx); err != nil {
+		if err := j.verify(ctx, true); err != nil {
 			return nil, err
 		}
 		return j, nil
 	}
-	generation, err := randomName("run-")
-	if err != nil {
-		return nil, err
-	}
+	generation := randomName("run-")
 	if err := slot.Mkdir(generation, 0700); err != nil {
 		return nil, err
 	}

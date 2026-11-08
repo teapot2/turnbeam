@@ -16,10 +16,16 @@ func main() {
 }
 
 func run() int {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalContext()
 	defer stop()
-	// The first signal cancels gracefully, keeping valid checkpoints. Restoring
-	// default handling then lets a second Ctrl-C terminate immediately.
-	context.AfterFunc(ctx, stop)
 	return cli.Run(ctx, os.Args[1:], version, os.Stdout, os.Stderr)
+}
+
+// signalContext is canceled by the first Ctrl-C or SIGTERM, which stops work
+// gracefully and keeps valid checkpoints. It then restores default signal
+// handling, so a second Ctrl-C terminates immediately.
+func signalContext() (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	context.AfterFunc(ctx, stop)
+	return ctx, stop
 }

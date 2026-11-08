@@ -41,8 +41,10 @@ func (j *Job) Transcribe(ctx context.Context, pool meta.Pool, recording *media.P
 		j.mu.Unlock()
 	}()
 	if len(pending) > 0 {
-		if err := j.CheckMedia(ctx, recording); err != nil {
-			return nil, err
+		if !j.alreadyChecked(recording) {
+			if err := j.CheckMedia(ctx, recording); err != nil {
+				return nil, err
+			}
 		}
 		if pool.Transcriber == nil {
 			pool.Transcriber = meta.Client{Model: settings.MetaModel}
@@ -63,9 +65,5 @@ func (j *Job) Transcribe(ctx context.Context, pool meta.Pool, recording *media.P
 			return nil, err
 		}
 	}
-	if err := j.Finish(ctx); err != nil {
-		return nil, err
-	}
-	results, _, err := j.Results(ctx)
-	return results, err
+	return j.finish(ctx)
 }

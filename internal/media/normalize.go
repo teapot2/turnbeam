@@ -34,7 +34,7 @@ type Prepared struct {
 
 // ValidTimeline checks positive, representable sample/duration metadata, not files.
 func (p *Prepared) ValidTimeline() bool {
-	return p != nil && p.Samples > 0 && p.Samples <= maxSamples && p.Duration == sampleDuration(p.Samples)
+	return p != nil && p.Samples > 0 && p.Samples <= maxSamples && p.Duration == SampleDuration(p.Samples)
 }
 
 // Close removes only this preparation's private temporary directory; it is idempotent.
@@ -76,7 +76,7 @@ func (p Processor) Prepare(ctx context.Context, path string) (_ *Prepared, err e
 	if err := f.Close(); err != nil {
 		return nil, fmt.Errorf("close temporary WAV: %w", err)
 	}
-	expected := samplesFor(source.Duration)
+	expected := SamplesCeil(source.Duration)
 	if expected >= maxSamples {
 		return nil, fmt.Errorf("%w: recording timeline is too large", ErrInvalidMedia)
 	}
@@ -113,17 +113,21 @@ func (p Processor) Prepare(ctx context.Context, path string) (_ *Prepared, err e
 		return nil, err
 	}
 	complete = true
-	return &Prepared{Path: output, Source: source, Samples: wav.samples, Duration: sampleDuration(wav.samples), dir: dir}, nil
+	return &Prepared{Path: output, Source: source, Samples: wav.samples, Duration: SampleDuration(wav.samples), dir: dir}, nil
 }
 
 func (i Info) normalized() bool {
 	return i.format == "wav" && i.Codec == "pcm_s16le" && i.sampleFmt == "s16" && i.bits == 16 && i.SampleRate == SampleRate && i.Channels == 1 && i.timeBase == "1/24000" && i.AudioOffset == 0 && i.start == 0
 }
 
-func samplesFor(d time.Duration) int64 {
+// SamplesCeil converts a duration to samples at SampleRate, rounding up, without
+// overflowing long recordings.
+func SamplesCeil(d time.Duration) int64 {
 	return int64(d/time.Second)*SampleRate + (int64(d%time.Second)*SampleRate+int64(time.Second)-1)/int64(time.Second)
 }
 
-func sampleDuration(samples int64) time.Duration {
+// SampleDuration converts samples at SampleRate to a duration, rounding down,
+// without overflowing long recordings.
+func SampleDuration(samples int64) time.Duration {
 	return time.Duration(samples/SampleRate)*time.Second + time.Duration(samples%SampleRate)*time.Second/SampleRate
 }

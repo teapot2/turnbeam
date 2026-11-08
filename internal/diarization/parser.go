@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/teapot2/turnbeam/internal/safeio"
 )
 
 // EndTolerance is one native diarization frame; larger overruns are invalid.
@@ -30,18 +32,6 @@ type rawSegment struct {
 	speaker    string
 }
 
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.r.Read(p)
-}
-
 // ParseRTTM reads the pinned runtime's ten-column, single-recording, mono SPEAKER
 // records. It retains exact fixed-point times, allows real overlaps and empty
 // silence output, and never echoes native records in errors. First-appearance
@@ -54,7 +44,7 @@ func ParseRTTM(ctx context.Context, input io.Reader, recordingID string, duratio
 		return Timeline{}, fmt.Errorf("%w: positive duration and recording ID required", ErrRTTM)
 	}
 	timeline := Timeline{Duration: duration, Speakers: []Speaker{}, Segments: []Segment{}, Adjustments: []EndAdjustment{}, Warnings: []string{}}
-	limited := &io.LimitedReader{R: contextReader{ctx, input}, N: maxRTTMBytes + 1}
+	limited := &io.LimitedReader{R: safeio.Reader(ctx, input), N: maxRTTMBytes + 1}
 	scanner := bufio.NewScanner(limited)
 	scanner.Buffer(make([]byte, 4096), 64<<10)
 	var records []rawSegment

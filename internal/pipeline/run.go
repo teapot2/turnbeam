@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -132,144 +133,181 @@ func (r Runner) process(ctx context.Context, input, mode string, opts Options, r
 	if err != nil {
 		return nil, err
 	}
-	var prepared *media.Prepared
-	var key string
+	w := &invocation{Runner: r, job: j, reporter: reporter, input: input, opts: opts}
+	defer func() {
+		if w.prepared != nil {
+			err = errors.Join(err, w.prepared.Close())
+		}
+	}()
 	if info.TranscriptionReady {
 		reporter.ReusingResults()
-	} else {
-		provider := r.Credentials
-		if provider == nil {
-			provider = credentials.Provider{}
-		}
-		key, _, err = provider.Resolve(ctx)
-		if err != nil {
-			return nil, err
-		}
-		p := r.Media
-		if p == nil {
-			p = media.Processor{}
-		}
-		if err = reporter.Stage(ctx, progress.Normalize); err != nil {
-			return nil, err
-		}
-		prepared, err = p.Prepare(ctx, input)
-		if prepared != nil {
-			defer func() { err = errors.Join(err, prepared.Close()) }()
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !prepared.ValidTimeline() {
-			return nil, media.ErrInvalidMedia
-		}
-		reporter.AudioPrepared(prepared.Duration)
-		if err = j.CheckMedia(ctx, prepared); err != nil {
-			return nil, err
-		}
-		_, cached, e := j.Diarization(ctx)
-		if e != nil {
-			return nil, e
-		}
-		if !cached {
-			if err = reporter.Stage(ctx, progress.Diarize); err != nil {
-				return nil, err
-			}
-			d := r.Diarizer
-			if d == nil {
-				d = diarization.Adapter{InstallDir: opts.InstallDir}
-			}
-			native, e := d.Diarize(ctx, prepared)
-			if e != nil {
-				if native != nil {
-					e = errors.Join(e, native.Close())
-				}
-				return nil, e
-			}
-			if native == nil {
-				return nil, diarization.ErrRTTM
-			}
-			err = errors.Join(j.SaveDiarization(ctx, native), native.Close())
-			if err != nil {
-				return nil, err
-			}
-			if timeline, ok, e := j.Diarization(ctx); e == nil && ok {
-				reporter.SpeakersFound(len(timeline.Speakers))
-			}
-		}
-		if j.Plan() == nil {
-			if err = reporter.Stage(ctx, progress.Chunk); err != nil {
-				return nil, err
-			}
-			timeline, _, e := j.Diarization(ctx)
-			if e != nil {
-				return nil, e
-			}
-			silence, e := p.DetectSilence(ctx, prepared)
-			if e != nil {
-				return nil, e
-			}
-			plan, e := chunking.Plan(ctx, prepared.Samples, timeline, silence)
-			if e != nil {
-				return nil, e
-			}
-			if err = j.SavePlan(ctx, plan); err != nil {
-				return nil, err
-			}
-			reporter.ChunksPlanned(len(plan))
-		}
-		if r.Pool.Extractor == nil {
-			r.Pool.Extractor = p
-		}
-		if err = reporter.Stage(ctx, progress.Transcribe); err != nil {
-			return nil, err
-		}
-		if info, err = j.Info(); err != nil {
-			return nil, err
-		}
-		if err = reporter.TranscribeStarting(info.Chunks, info.ChunksDone); err != nil {
-			return nil, err
-		}
+	} else if err = w.prepare(ctx); err != nil {
+		return nil, err
 	}
-	if opts.Concurrency > 0 {
-		r.Pool.Concurrency = opts.Concurrency
+	rows, err := w.transcribe(ctx)
+	if err != nil {
+		return nil, err
 	}
-	observer := r.Pool.OnProgress
-	r.Pool.OnProgress = func(ctx context.Context, event meta.Progress) error {
-		err := reporter.Transcription(ctx, event)
+	return w.finish(ctx, settings, info.InputSHA256, rows)
+}
+
+// invocation holds one run's state while process moves it through the stages.
+type invocation struct {
+	Runner
+	job      *jobs.Job
+	reporter *progress.Reporter
+	input    string
+	opts     Options
+	media    processor
+	prepared *media.Prepared
+	key      string
+}
+
+// prepare resolves the key, normalizes the recording and saves whatever the
+// checkpoint still lacks: the speaker timeline and the chunk plan.
+func (w *invocation) prepare(ctx context.Context) (err error) {
+	provider := w.Credentials
+	if provider == nil {
+		provider = credentials.Provider{}
+	}
+	if w.key, _, err = provider.Resolve(ctx); err != nil {
+		return err
+	}
+	w.media = w.Media
+	if w.media == nil {
+		w.media = media.Processor{}
+	}
+	if err = w.reporter.Stage(ctx, progress.Normalize); err != nil {
+		return err
+	}
+	if w.prepared, err = w.media.Prepare(ctx, w.input); err != nil {
+		return err
+	}
+	if !w.prepared.ValidTimeline() {
+		return media.ErrInvalidMedia
+	}
+	w.reporter.AudioPrepared(w.prepared.Duration)
+	if err = w.job.CheckMedia(ctx, w.prepared); err != nil {
+		return err
+	}
+	if err = w.diarize(ctx); err != nil {
+		return err
+	}
+	if err = w.plan(ctx); err != nil {
+		return err
+	}
+	if w.Pool.Extractor == nil {
+		w.Pool.Extractor = w.media
+	}
+	if err = w.reporter.Stage(ctx, progress.Transcribe); err != nil {
+		return err
+	}
+	info, err := w.job.Info()
+	if err != nil {
+		return err
+	}
+	return w.reporter.TranscribeStarting(info.Chunks, info.ChunksDone)
+}
+
+// diarize runs the local speaker model unless the checkpoint has its timeline.
+func (w *invocation) diarize(ctx context.Context) error {
+	if _, cached, err := w.job.Diarization(ctx); err != nil || cached {
+		return err
+	}
+	if err := w.reporter.Stage(ctx, progress.Diarize); err != nil {
+		return err
+	}
+	d := w.Diarizer
+	if d == nil {
+		d = diarization.Adapter{InstallDir: w.opts.InstallDir}
+	}
+	native, err := d.Diarize(ctx, w.prepared)
+	if err != nil {
+		if native != nil {
+			err = errors.Join(err, native.Close())
+		}
+		return err
+	}
+	if native == nil {
+		return diarization.ErrRTTM
+	}
+	if err := errors.Join(w.job.SaveDiarization(ctx, native), native.Close()); err != nil {
+		return err
+	}
+	if timeline, ok, err := w.job.Diarization(ctx); err == nil && ok {
+		w.reporter.SpeakersFound(len(timeline.Speakers))
+	}
+	return nil
+}
+
+// plan splits the recording at pauses unless the checkpoint has a plan.
+func (w *invocation) plan(ctx context.Context) error {
+	if w.job.Plan() != nil {
+		return nil
+	}
+	if err := w.reporter.Stage(ctx, progress.Chunk); err != nil {
+		return err
+	}
+	timeline, _, err := w.job.Diarization(ctx)
+	if err != nil {
+		return err
+	}
+	silence, err := w.media.DetectSilence(ctx, w.prepared)
+	if err != nil {
+		return err
+	}
+	plan, err := chunking.Plan(ctx, w.prepared.Samples, timeline, silence)
+	if err != nil {
+		return err
+	}
+	if err := w.job.SavePlan(ctx, plan); err != nil {
+		return err
+	}
+	w.reporter.ChunksPlanned(len(plan))
+	return nil
+}
+
+// transcribe sends the chunks the checkpoint still lacks to Meta.
+func (w *invocation) transcribe(ctx context.Context) ([]meta.Result, error) {
+	if w.opts.Concurrency > 0 {
+		w.Pool.Concurrency = w.opts.Concurrency
+	}
+	observer := w.Pool.OnProgress
+	w.Pool.OnProgress = func(ctx context.Context, event meta.Progress) error {
+		err := w.reporter.Transcription(ctx, event)
 		if observer != nil {
 			err = errors.Join(err, observer(ctx, event))
 		}
 		return err
 	}
-	rows, err := j.Transcribe(ctx, r.Pool, prepared, key)
-	if err != nil {
-		return nil, err
-	}
-	timeline, ok, err := j.Diarization(ctx)
+	return w.job.Transcribe(ctx, w.Pool, w.prepared, w.key)
+}
+
+// finish places Meta's turns on the recording clock and attributes speakers.
+func (w *invocation) finish(ctx context.Context, settings jobs.Settings, inputHash string, rows []meta.Result) (*transcript.Transcript, error) {
+	timeline, ok, err := w.job.Diarization(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, jobs.ErrCorrupt
 	}
-	for _, warning := range timeline.Warnings {
-		if warning == diarization.SpeakerLimitReached {
-			if err = reporter.WarnSpeakerLimit(ctx); err != nil {
-				return nil, err
-			}
-			break
+	if slices.Contains(timeline.Warnings, diarization.SpeakerLimitReached) {
+		if err := w.reporter.WarnSpeakerLimit(ctx); err != nil {
+			return nil, err
 		}
 	}
-	if err = reporter.Stage(ctx, progress.Assemble); err != nil {
+	if err := w.reporter.Stage(ctx, progress.Assemble); err != nil {
 		return nil, err
 	}
-	canonical, err := alignment.Assemble(ctx, transcript.Recording{Name: filepath.Base(input), DurationMS: timeline.Duration.Milliseconds(), SHA256: info.InputSHA256}, transcript.Pipeline{MetaModel: settings.MetaModel, MetaMode: settings.MetaMode, DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}, j.Plan(), rows)
+	recording := transcript.Recording{Name: filepath.Base(w.input), DurationMS: timeline.Duration.Milliseconds(), SHA256: inputHash}
+	provenance := transcript.Pipeline{MetaModel: settings.MetaModel, MetaMode: settings.MetaMode, DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}
+	canonical, err := alignment.Assemble(ctx, recording, provenance, w.job.Plan(), rows)
 	if err != nil {
 		return nil, err
 	}
-	if err = reporter.Stage(ctx, progress.Align); err != nil {
+	if err := w.reporter.Stage(ctx, progress.Align); err != nil {
 		return nil, err
 	}
-	result, err = alignment.Align(ctx, canonical, timeline, alignment.DefaultPolicy())
-	return result, err
+	return alignment.Align(ctx, canonical, timeline, alignment.DefaultPolicy())
 }

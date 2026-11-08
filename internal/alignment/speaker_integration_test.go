@@ -13,7 +13,7 @@ import (
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
-func TestReturningGlobalSpeakerAndDetachedRealignment(t *testing.T) {
+func TestReturningGlobalSpeakerAndDetachedOutput(t *testing.T) {
 	f := newFixture(false, 540000)
 	a, b := "A", "B"
 	f.results[0].Response.Turns = []transcript.RawTurn{raw(0, 100, 200, "First."), raw(1, 2100, 2200, "Second.")}
@@ -31,17 +31,12 @@ func TestReturningGlobalSpeakerAndDetachedRealignment(t *testing.T) {
 			t.Fatal("returning speaker or first-appearance IDs changed")
 		}
 	}
-	name := "Alice"
-	got.Speakers[0].Name = &name
-	got.SourceChunks[0].RawTurns[0].Speaker = copyString(&a)
-	again, err := Align(context.Background(), got, timeline, DefaultPolicy())
-	if err != nil || !reflect.DeepEqual(again, got) {
-		t.Fatal("realignment changed stable identities/display metadata", err)
+	if again, err := Align(context.Background(), got, timeline, DefaultPolicy()); again != nil || !errors.Is(err, ErrAlignment) {
+		t.Fatal("an already aligned transcript was realigned", err)
 	}
-	*again.Speakers[0].Name = "Changed output"
-	*again.SourceChunks[0].RawTurns[0].Speaker = "Changed output"
-	*again.Turns[0].SpeakerID = "Changed output"
-	if *got.Speakers[0].Name != "Alice" || *got.SourceChunks[0].RawTurns[0].Speaker != "A" || *got.Turns[0].SpeakerID != "speaker_0001" || len(input.Speakers) != 0 || input.Turns[0].SpeakerID != nil {
+	*got.SourceChunks[0].RawTurns[0].Speaker = "Changed output"
+	*got.Turns[0].SpeakerID = "Changed output"
+	if *input.SourceChunks[0].RawTurns[0].Speaker != "A" || len(input.Speakers) != 0 || input.Turns[0].SpeakerID != nil {
 		t.Fatal("alignment outputs alias inputs")
 	}
 }

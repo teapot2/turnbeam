@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/teapot2/turnbeam/internal/filelock"
+	"github.com/teapot2/turnbeam/internal/safeio"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
@@ -90,7 +91,7 @@ func openSource(ctx context.Context, path string) (_ *source, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("open transcript directory: %w", err)
 	}
-	s := &source{root: root, name: filepath.Base(abs), commit: root.Rename, sync: func() error { return syncDir(root) }}
+	s := &source{root: root, name: filepath.Base(abs), commit: root.Rename, sync: func() error { return safeio.SyncDir(root) }}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, s.close())
@@ -111,7 +112,7 @@ func openSource(ctx context.Context, path string) (_ *source, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("open transcript: %w", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(reader{ctx, f}, maxTranscriptBytes+1))
+	data, readErr := io.ReadAll(io.LimitReader(safeio.Reader(ctx, f), maxTranscriptBytes+1))
 	err = errors.Join(readErr, f.Close(), ctx.Err())
 	if err != nil {
 		return nil, fmt.Errorf("read transcript: %w", err)
@@ -155,7 +156,7 @@ func (s *source) check(ctx context.Context) (err error) {
 		return errors.Join(ErrSourceChanged, err)
 	}
 	hash := sha256.New()
-	n, err := io.Copy(hash, io.LimitReader(reader{ctx, f}, maxTranscriptBytes+1))
+	n, err := io.Copy(hash, io.LimitReader(safeio.Reader(ctx, f), maxTranscriptBytes+1))
 	if err != nil {
 		return err
 	}

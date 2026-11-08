@@ -353,13 +353,13 @@ func TestPreparationDependencyAndStorageFailures(t *testing.T) {
 
 func TestSampleBoundaries(t *testing.T) {
 	for _, samples := range []int64{1, 23999, 24000, 24001, 24000 * 5400} {
-		d := sampleDuration(samples)
-		if got := samplesFor(d); got != samples {
+		d := SampleDuration(samples)
+		if got := SamplesCeil(d); got != samples {
 			t.Fatalf("sample boundary changed: %d -> %v -> %d", samples, d, got)
 		}
 	}
 	for _, samples := range []int64{1, 24000, maxSamples} {
-		if !(&Prepared{Samples: samples, Duration: sampleDuration(samples)}).ValidTimeline() {
+		if !(&Prepared{Samples: samples, Duration: SampleDuration(samples)}).ValidTimeline() {
 			t.Fatal("valid sample timeline rejected")
 		}
 	}

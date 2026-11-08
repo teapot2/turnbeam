@@ -13,6 +13,7 @@ import (
 
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/diarization"
+	"github.com/teapot2/turnbeam/internal/jobs"
 	"github.com/teapot2/turnbeam/internal/media"
 	"github.com/teapot2/turnbeam/internal/meta"
 	"github.com/teapot2/turnbeam/internal/output"
@@ -23,7 +24,7 @@ import (
 type fakeMedia struct {
 	path                     string
 	prepare, detect, extract int
-	fail                     error
+	fail, detectFail         error
 }
 
 func (f *fakeMedia) Prepare(context.Context, string) (*media.Prepared, error) {
@@ -35,7 +36,7 @@ func (f *fakeMedia) Prepare(context.Context, string) (*media.Prepared, error) {
 }
 func (f *fakeMedia) DetectSilence(context.Context, *media.Prepared) ([]media.Silence, error) {
 	f.detect++
-	return nil, nil
+	return nil, f.detectFail
 }
 func (f *fakeMedia) Extract(_ context.Context, _ *media.Prepared, start, end int64) (*media.Clip, error) {
 	f.extract++
@@ -257,5 +258,53 @@ func TestBrokenProgressStreamDoesNotFailPaidWork(t *testing.T) {
 	}
 	if data, err := os.ReadFile(path); err != nil || len(data) == 0 || f.calls != 1 {
 		t.Fatal("transcript was not published once", err)
+	}
+}
+
+// A crash after the speaker timeline is saved but before chunk planning must
+// resume without running the native model again.
+func TestResumeAfterDiarizationBeforePlanning(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.media.detectFail = errors.New("simulated crash before planning")
+	if err := f.runner.Run(ctx, f.input, Options{}, io.Discard, io.Discard); err == nil || f.diarizer.calls != 1 || f.calls != 0 {
+		t.Fatalf("first run: err=%v diarizer=%d meta=%d", err, f.diarizer.calls, f.calls)
+	}
+	f.media.detectFail = nil
+	f.diarizer.fail = errors.New("must reuse the saved speaker timeline")
+	var stdout bytes.Buffer
+	if err := f.runner.Run(ctx, f.input, Options{Resume: true}, &stdout, io.Discard); err != nil {
+		t.Fatal("resume did not reuse the saved timeline", err)
+	}
+	if f.diarizer.calls != 1 || f.media.detect != 2 || f.calls != 1 || stdout.Len() == 0 {
+		t.Fatalf("resume reran the native model or skipped planning: diarizer=%d detect=%d meta=%d", f.diarizer.calls, f.media.detect, f.calls)
+	}
+}
+
+// If the normalized audio no longer matches the checkpoint, resuming must stop
+// before any paid request and publish nothing.
+func TestResumeRejectsChangedNormalizedAudio(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	transcriber := f.runner.Pool.Transcriber
+	f.runner.Pool.Transcriber = transcriberFunc(func(context.Context, *media.Clip, string, string) (*meta.Response, error) {
+		f.calls++
+		return nil, &meta.Error{Kind: meta.ErrHTTP, StatusCode: 400}
+	})
+	if err := f.runner.Run(ctx, f.input, Options{}, io.Discard, io.Discard); err == nil {
+		t.Fatal("first run should fail at transcription")
+	}
+	paid := f.calls
+	f.runner.Pool.Transcriber = transcriber
+	if err := os.WriteFile(f.media.path, []byte("different normalized bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "meeting.md")
+	err := f.runner.Run(ctx, f.input, Options{Resume: true, Output: out}, io.Discard, io.Discard)
+	if !errors.Is(err, jobs.ErrMismatch) || f.calls != paid {
+		t.Fatalf("changed audio: err=%v requests=%d (before %d)", err, f.calls, paid)
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("a transcript was published for mismatched audio")
 	}
 }

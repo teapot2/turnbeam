@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 
 	"github.com/teapot2/turnbeam/internal/chunking"
 	"github.com/teapot2/turnbeam/internal/diarization"
@@ -16,7 +17,9 @@ import (
 	"github.com/teapot2/turnbeam/internal/meta"
 )
 
-func (j *Job) verify(ctx context.Context) error {
+// verify checks the manifest's structure. Deep checks also read and validate
+// the RTTM and every saved response; callers that read them anyway skip that.
+func (j *Job) verify(ctx context.Context, deep bool) error {
 	if !validHash(j.m.InputSHA256) || !j.m.Settings.valid() || j.m.Completed == nil {
 		return ErrCorrupt
 	}
@@ -30,7 +33,7 @@ func (j *Job) verify(ctx context.Context) error {
 	if !(&media.Prepared{Samples: n.Samples, Duration: n.duration()}).ValidTimeline() || !validHash(n.SHA256) {
 		return ErrCorrupt
 	}
-	if j.m.RTTM != nil {
+	if j.m.RTTM != nil && deep {
 		if _, err := j.timeline(ctx); err != nil {
 			return fmt.Errorf("%w: diarization: %w", ErrCorrupt, err)
 		}
@@ -54,7 +57,7 @@ func (j *Job) verify(ctx context.Context) error {
 	known := map[string]bool{}
 	for _, c := range *j.m.Plan {
 		known[c.ID] = true
-		if done, exists := j.m.Completed[c.ID]; exists {
+		if done, exists := j.m.Completed[c.ID]; exists && deep {
 			if _, err := j.response(ctx, c, done); err != nil {
 				return fmt.Errorf("%w: completed response: %w", ErrCorrupt, err)
 			}
@@ -71,12 +74,26 @@ func (j *Job) verify(ctx context.Context) error {
 	return nil
 }
 
+// timeline parses the committed RTTM once per session; callers get a copy.
 func (j *Job) timeline(ctx context.Context) (diarization.Timeline, error) {
-	data, err := j.readArtifact(ctx, "rttm", *j.m.RTTM, maxRTTM)
-	if err != nil {
-		return diarization.Timeline{}, err
+	if j.parsed == nil || j.parsedFrom != j.m.RTTM.SHA256 {
+		data, err := j.readArtifact(ctx, "rttm", *j.m.RTTM, maxRTTM)
+		if err != nil {
+			return diarization.Timeline{}, err
+		}
+		t, err := diarization.ParseRTTM(ctx, bytes.NewReader(data), "recording", j.m.Media.duration())
+		if err != nil {
+			return diarization.Timeline{}, err
+		}
+		j.parsed, j.parsedFrom = &t, j.m.RTTM.SHA256
 	}
-	return diarization.ParseRTTM(ctx, bytes.NewReader(data), "recording", j.m.Media.duration())
+	return cloneTimeline(*j.parsed), nil
+}
+
+func cloneTimeline(t diarization.Timeline) diarization.Timeline {
+	t.Speakers, t.Segments = slices.Clone(t.Speakers), slices.Clone(t.Segments)
+	t.Adjustments, t.Warnings = slices.Clone(t.Adjustments), slices.Clone(t.Warnings)
+	return t
 }
 
 func (j *Job) response(ctx context.Context, c chunking.Chunk, done completed) (*meta.Response, error) {
@@ -129,7 +146,15 @@ func (j *Job) CheckMedia(ctx context.Context, recording *media.Prepared) error {
 		}
 	}
 	j.mediaChecked = true
+	j.checked.path, j.checked.samples = recording.Path, recording.Samples
 	return nil
+}
+
+// alreadyChecked reports whether CheckMedia verified this recording this session.
+func (j *Job) alreadyChecked(recording *media.Prepared) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.mediaChecked && recording != nil && recording.Path == j.checked.path && recording.Samples == j.checked.samples
 }
 
 // SaveDiarization commits unchanged RTTM independently of transcription results.
@@ -157,7 +182,8 @@ func (j *Job) SaveDiarization(ctx context.Context, result *diarization.Result) e
 	if err != nil {
 		return err
 	}
-	if _, err := diarization.ParseRTTM(ctx, bytes.NewReader(data), "recording", j.m.Media.duration()); err != nil {
+	parsed, err := diarization.ParseRTTM(ctx, bytes.NewReader(data), "recording", j.m.Media.duration())
+	if err != nil {
 		return err
 	}
 	if j.m.RTTM != nil {
@@ -172,7 +198,11 @@ func (j *Job) SaveDiarization(ctx context.Context, result *diarization.Result) e
 	}
 	next := j.m
 	next.RTTM = &a
-	return j.commit(ctx, next)
+	if err := j.commit(ctx, next); err != nil {
+		return err
+	}
+	j.parsed, j.parsedFrom = &parsed, a.SHA256
+	return nil
 }
 
 // Diarization reuses only committed, checksummed raw data; silence is valid.
@@ -309,23 +339,35 @@ func (j *Job) results(ctx context.Context) ([]meta.Result, error) {
 
 // Finish validates every reference before atomically marking a job complete.
 func (j *Job) Finish(ctx context.Context) error {
+	_, err := j.finish(ctx)
+	return err
+}
+
+// finish reads and validates every saved response once and returns them.
+func (j *Job) finish(ctx context.Context) ([]meta.Result, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if err := j.usable(); err != nil {
-		return err
+		return nil, err
 	}
-	if err := j.verify(ctx); err != nil {
-		return err
+	if err := j.verify(ctx, false); err != nil {
+		return nil, err
 	}
-	if _, err := j.results(ctx); err != nil {
-		return err
+	results, err := j.results(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if j.m.Complete {
-		return ctx.Err()
+	if !j.m.Complete {
+		next := j.m
+		next.Complete = true
+		if err := j.commit(ctx, next); err != nil {
+			return nil, err
+		}
 	}
-	next := j.m
-	next.Complete = true
-	return j.commit(ctx, next)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 func corrupt(err error) error { return errors.Join(ErrCorrupt, err) }

@@ -214,7 +214,7 @@ func TestCancellation(t *testing.T) {
 	cancel()
 	for _, args := range [][]string{{"meeting.wav"}, {"setup"}, {"doctor"}, {"key", "status"}, {"export", "a.json"}, {"speakers", "rename", "a.json", "--speaker", "1=Alice"}} {
 		code, diagnostic := invoke(ctx, args...)
-		if code != 130 || diagnostic != "Error: context canceled\n" {
+		if code != 130 || diagnostic != "Error: canceled\n" {
 			t.Fatalf("%v: code=%d, stderr=%q", args, code, diagnostic)
 		}
 	}
@@ -312,4 +312,8 @@ func TestShellCompletion(t *testing.T) {
 			}
 		}
 	}
+}
+
+func newRoot(version string, code *int) *cobra.Command {
+	return newRootWithTranscriber(version, code, os.Stdout, (pipeline.Runner{}).Run)
 }

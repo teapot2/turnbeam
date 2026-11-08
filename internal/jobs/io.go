@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/teapot2/turnbeam/internal/safeio"
 )
 
 const maxManifest = 8 << 20
@@ -30,19 +32,10 @@ func validGeneration(value string) bool {
 	data, err := hex.DecodeString(suffix)
 	return err == nil && len(data) == 16 && hex.EncodeToString(data) == suffix
 }
-func randomName(prefix string) (string, error) {
+func randomName(prefix string) string {
 	var value [16]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
-	}
-	return prefix + hex.EncodeToString(value[:]), nil
-}
-func syncDir(root *os.Root) error {
-	f, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	return errors.Join(f.Sync(), f.Close())
+	rand.Read(value[:]) // never fails since Go 1.24
+	return prefix + hex.EncodeToString(value[:])
 }
 func readFile(ctx context.Context, root *os.Root, name string, limit int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
@@ -60,7 +53,7 @@ func readFile(ctx context.Context, root *os.Root, name string, limit int64) ([]b
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(contextReader{ctx, f}, limit+1))
+	data, err := io.ReadAll(io.LimitReader(safeio.Reader(ctx, f), limit+1))
 	if err != nil {
 		return nil, err
 	}
@@ -70,20 +63,8 @@ func readFile(ctx context.Context, root *os.Root, name string, limit int64) ([]b
 	return data, nil
 }
 
-type contextReader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.r.Read(p)
-}
-
 func readBounded(ctx context.Context, r io.Reader, limit int64) ([]byte, error) {
-	data, err := io.ReadAll(io.LimitReader(contextReader{ctx, r}, limit+1))
+	data, err := io.ReadAll(io.LimitReader(safeio.Reader(ctx, r), limit+1))
 	if err != nil {
 		return nil, err
 	}
@@ -96,16 +77,13 @@ func readBounded(ctx context.Context, r io.Reader, limit int64) ([]byte, error) 
 // Rename is the commit point; directory sync makes that commit durable. A failure
 // after rename is uncertain, so callers poison the session and must reopen it.
 func atomicWrite(ctx context.Context, root *os.Root, name string, data []byte) error {
-	tmp, err := randomName(".tmp-")
-	if err != nil {
-		return err
-	}
+	tmp := randomName(".tmp-")
 	f, err := root.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
 	}
 	defer root.Remove(tmp)
-	_, writeErr := io.Copy(f, contextReader{ctx, bytes.NewReader(data)})
+	_, writeErr := io.Copy(f, safeio.Reader(ctx, bytes.NewReader(data)))
 	err = errors.Join(writeErr, f.Sync(), f.Close())
 	if err != nil {
 		return err
@@ -116,7 +94,7 @@ func atomicWrite(ctx context.Context, root *os.Root, name string, data []byte) e
 	if err := root.Rename(tmp, name); err != nil {
 		return err
 	}
-	return syncDir(root)
+	return safeio.SyncDir(root)
 }
 
 func artifactName(prefix string, a artifact) string { return prefix + "-" + a.SHA256 }
