@@ -80,10 +80,12 @@ Any file with an audio track that FFmpeg can decode works as input.
 With `--output`, Turnbeam also writes a JSON sidecar (`meeting.transcript.json`)
 with exact timings and speaker IDs; renaming and re-exporting work from it.
 Without `--output`, only the transcript goes to stdout and progress goes to
-stderr. Use `--format` (`markdown`, `text`, `json`) and `--timestamps`
-(`start`, `range`, `none`) to change the output; `turnbeam --help` lists all
-options. Keep the default `--mode diarization`: `--mode endpointing` splits turns
-at pauses regardless of who is talking, so far fewer of them get a speaker.
+stderr. Use `--format` (`markdown`, `text`, `json`, or `srt`/`vtt` subtitles)
+and `--timestamps` (`start`, `range`, `none`) to change the output; without
+`--format`, the output file's extension picks it, so `-o meeting.srt` writes SRT
+subtitles. `turnbeam --help` lists all options. Keep the default `--mode
+diarization`: `--mode endpointing` splits turns at pauses regardless of who is
+talking, so far fewer of them get a speaker.
 
 ## Resume, rename and export
 

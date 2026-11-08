@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/transcript"
 
 	"github.com/spf13/cobra"
 )
@@ -316,4 +317,30 @@ func TestShellCompletion(t *testing.T) {
 
 func newRoot(version string, code *int) *cobra.Command {
 	return newRootWithTranscriber(version, code, os.Stdout, (pipeline.Runner{}).Run)
+}
+
+func TestOutputExtensionSelectsFormat(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want transcript.Format
+	}{
+		{[]string{"meeting.wav", "-o", "meeting.srt"}, transcript.FormatSRT},
+		{[]string{"meeting.wav", "-o", "meeting.vtt"}, transcript.FormatVTT},
+		{[]string{"meeting.wav", "-o", "notes.MD"}, transcript.FormatMarkdown},
+		{[]string{"meeting.wav", "-o", "meeting.transcript"}, transcript.FormatMarkdown},
+		{[]string{"meeting.wav", "-o", "meeting.srt", "-f", "text"}, transcript.FormatText},
+	} {
+		code := 2
+		var got transcript.Format
+		root := newRootWithTranscriber("test", &code, io.Discard, func(_ context.Context, _ string, o pipeline.Options, _, _ io.Writer) error {
+			got = o.Render.Format
+			return nil
+		})
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		root.SetArgs(tc.args)
+		if err := root.ExecuteContext(context.Background()); err != nil || got != tc.want {
+			t.Fatalf("%v: format %q, want %q (%v)", tc.args, got, tc.want, err)
+		}
+	}
 }

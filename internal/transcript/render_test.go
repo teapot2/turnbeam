@@ -24,6 +24,9 @@ func TestRenderFormatsAndTimestampModes(t *testing.T) {
 		{"text start", "text", "start", "[00:00:00.000] Alice: Hello.\n[00:00:03.000] Unknown speaker: Yes.\n[00:00:14.000] Speaker 2: Next.\n"},
 		{"text range", "text", "range", "[00:00:00.000 - 00:00:02.500] Alice: Hello.\n[00:00:03.000 - 00:00:04.000] Unknown speaker: Yes.\n[00:00:14.000 - 00:00:14.500] Speaker 2: Next.\n"},
 		{"text none", "text", "none", "Alice: Hello.\nUnknown speaker: Yes.\nSpeaker 2: Next.\n"},
+		{"srt", "srt", "", "1\n00:00:00,000 --> 00:00:02,500\nAlice: Hello.\n\n2\n00:00:03,000 --> 00:00:04,000\nUnknown speaker: Yes.\n\n3\n00:00:14,000 --> 00:00:14,500\nSpeaker 2: Next.\n"},
+		{"srt ignores timestamp setting", "srt", "none", "1\n00:00:00,000 --> 00:00:02,500\nAlice: Hello.\n\n2\n00:00:03,000 --> 00:00:04,000\nUnknown speaker: Yes.\n\n3\n00:00:14,000 --> 00:00:14,500\nSpeaker 2: Next.\n"},
+		{"vtt", "vtt", "", "WEBVTT\n\n00:00:00.000 --> 00:00:02.500\n<v Alice>Hello.\n\n00:00:03.000 --> 00:00:04.000\n<v Unknown speaker>Yes.\n\n00:00:14.000 --> 00:00:14.500\n<v Speaker 2>Next.\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := example()
@@ -210,4 +213,34 @@ func FuzzRender(f *testing.F) {
 			t.Fatal("rendering mutated canonical data")
 		}
 	})
+}
+
+func TestSubtitleEscapingEmptyAndLongTimes(t *testing.T) {
+	input := example()
+	name := "Ana <Lead> & Co"
+	input.Speakers[0].Name = &name
+	input.Turns[0].Text = "Use x < y -> z & done"
+	input.SourceChunks[0].RawTurns[0].Transcript = input.Turns[0].Text
+	vtt, err := Render(context.Background(), input, RenderOptions{Format: FormatVTT})
+	if err != nil || !strings.Contains(string(vtt), "<v Ana &lt;Lead&gt; &amp; Co>Use x &lt; y -&gt; z &amp; done\n") {
+		t.Fatalf("WebVTT markup was not escaped: %q, %v", vtt, err)
+	}
+	srt, err := Render(context.Background(), input, RenderOptions{Format: FormatSRT})
+	if err != nil || !strings.Contains(string(srt), "Ana <Lead> & Co: Use x < y -> z & done\n") {
+		t.Fatalf("SRT text changed: %q, %v", srt, err)
+	}
+
+	empty := example()
+	empty.Turns = []Turn{}
+	for format, want := range map[Format]string{FormatSRT: "", FormatVTT: "WEBVTT\n"} {
+		if got, err := Render(context.Background(), empty, RenderOptions{Format: format}); err != nil || string(got) != want {
+			t.Fatalf("empty %s = %q, %v", format, got, err)
+		}
+	}
+	if got := cueTime(36_000_000+59*60_000+59_999, ','); got != "10:59:59,999" {
+		t.Fatalf("long cue time = %q", got)
+	}
+	if got := cueTime(0, '.'); got != "00:00:00.000" {
+		t.Fatalf("zero cue time = %q", got)
+	}
 }

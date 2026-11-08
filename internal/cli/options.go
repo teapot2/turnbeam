@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -40,7 +41,14 @@ func (o outputOptions) render() transcript.RenderOptions {
 	return transcript.RenderOptions{Format: transcript.Format(o.format), Timestamps: transcript.Timestamps(o.timestamps)}
 }
 
-func (o outputOptions) validate(cmd *cobra.Command) error {
+// validate checks the output flags. Without an explicit --format, a known
+// output extension (.srt, .vtt, .json, .txt, .md) selects the format.
+func (o *outputOptions) validate(cmd *cobra.Command) error {
+	if !cmd.Flags().Changed("format") {
+		if format, ok := formatForExtension(o.output); ok {
+			o.format = string(format)
+		}
+	}
 	if err := choice("format", transcript.Format(o.format), transcript.Formats...); err != nil {
 		return err
 	}
@@ -73,7 +81,7 @@ func (o *transcribeOptions) addFlags(cmd *cobra.Command) {
 	addInstallDirFlag(cmd, &o.installDir)
 }
 
-func (o transcribeOptions) validate(cmd *cobra.Command) error {
+func (o *transcribeOptions) validate(cmd *cobra.Command) error {
 	if err := o.outputOptions.validate(cmd); err != nil {
 		return err
 	}
@@ -149,4 +157,20 @@ func onePath(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("input path must not be empty")
 	}
 	return nil
+}
+
+func formatForExtension(path string) (transcript.Format, bool) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".srt":
+		return transcript.FormatSRT, true
+	case ".vtt":
+		return transcript.FormatVTT, true
+	case ".json":
+		return transcript.FormatJSON, true
+	case ".txt":
+		return transcript.FormatText, true
+	case ".md", ".markdown":
+		return transcript.FormatMarkdown, true
+	}
+	return "", false
 }
