@@ -192,3 +192,17 @@ func TestReadSecretUsesControllingTerminal(t *testing.T) {
 		master.Read(sink[:])
 	}
 }
+
+func TestTerminalCtrlDMeansNoKeyEntered(t *testing.T) {
+	master, slave := pseudoTerminal(t)
+	done := make(chan secretResult, 1)
+	go func() { key, err := readTerminal(context.Background(), slave, slave); done <- secretResult{key, err} }()
+	waitForPrompt(t, master)
+	if _, err := io.WriteString(master, "half\x04"); err != nil {
+		t.Fatal(err)
+	}
+	result := readResult(t, done)
+	if !errors.Is(result.err, ErrNoKeyEntered) || result.key != nil {
+		t.Fatalf("Ctrl-D: key=%q err=%v", result.key, result.err)
+	}
+}

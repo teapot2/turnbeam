@@ -15,6 +15,13 @@ import (
 const MaxAttempts = 3
 const maxBackoff = 30 * time.Second
 
+// MaxServerWait caps how long a Retry-After response is honored. Longer waits
+// stop the run instead of stalling it; completed chunks stay checkpointed.
+const MaxServerWait = 5 * time.Minute
+
+// ErrRetryLater reports that the service asked to wait longer than MaxServerWait.
+var ErrRetryLater = errors.New("the transcription service asked to wait more than 5 minutes; completed chunks are saved, so rerun later with --resume")
+
 func retryable(err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false

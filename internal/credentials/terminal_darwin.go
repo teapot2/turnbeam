@@ -76,7 +76,7 @@ func readTerminal(ctx context.Context, f *os.File, prompt io.Writer) (key []byte
 		}
 		ready, err := waitReadable(fd, 100*time.Millisecond)
 		if err != nil {
-			return key, err
+			return key, errors.Join(ErrTerminal, err)
 		}
 		if !ready {
 			continue
@@ -86,10 +86,10 @@ func readTerminal(ctx context.Context, f *os.File, prompt io.Writer) (key []byte
 			continue
 		}
 		if readErr != nil {
-			return key, readErr
+			return key, errors.Join(ErrTerminal, readErr)
 		}
 		if n == 0 {
-			return key, io.EOF
+			return key, errors.Join(ErrNoKeyEntered, io.EOF)
 		}
 		for _, c := range buffer[:n] {
 			switch c {
@@ -97,8 +97,8 @@ func readTerminal(ctx context.Context, f *os.File, prompt io.Writer) (key []byte
 				return key, nil
 			case 3:
 				return key, context.Canceled
-			case 4:
-				return key, io.EOF
+			case 4: // Ctrl-D
+				return key, errors.Join(ErrNoKeyEntered, io.EOF)
 			case 8, 127:
 				if len(key) > 0 {
 					key[len(key)-1] = 0

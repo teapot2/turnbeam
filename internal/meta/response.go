@@ -19,6 +19,13 @@ type Response struct {
 	Turns           []transcript.RawTurn `json:"turns"`
 }
 
+// TurnOvershootMS bounds how far a turn may end past the clip. Meta's audio clock
+// runs slightly long (it reports e.g. 15040 ms for a 15000 ms clip), and the clip
+// length is rounded down to whole milliseconds, so speech that reaches the very
+// end can overrun by a few milliseconds. Such turns are clipped to the clip end;
+// larger overruns are rejected.
+const TurnOvershootMS = 100
+
 // DecodeResponse validates persisted or captured API data against the WAV clock.
 // Unknown extensions are accepted but never included in the returned allowlist.
 func DecodeResponse(data []byte, durationMS int64) (*Response, error) {
@@ -72,9 +79,11 @@ func decodeResponse(data []byte, durationMS int64) (*Response, error) {
 				return nil, ErrResponse
 			}
 		}
-		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || id < 0 || ids[id] || start < 0 || end < start || end > durationMS {
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || id < 0 || ids[id] || start < 0 || end < start || end > durationMS+TurnOvershootMS {
 			return nil, ErrResponse
 		}
+		end = min(end, durationMS)
+		start = min(start, end)
 		ids[id] = true
 		r.Turns = append(r.Turns, transcript.RawTurn{TurnID: id, StartMS: start, EndMS: end, Transcript: text, Speaker: speaker})
 	}

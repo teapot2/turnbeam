@@ -216,6 +216,9 @@ func (p Pool) runChunk(ctx context.Context, recording *media.Prepared, chunk chu
 		if attempt == MaxAttempts-1 || serverFailures > 1 || !retryable(err) || ctx.Err() != nil {
 			return result, err
 		}
+		if remote != nil && remote.RetryAfter > MaxServerWait {
+			return result, errors.Join(ErrRetryLater, err)
+		}
 		delay := p.backoff(attempt)
 		if remote != nil {
 			delay = max(delay, remote.RetryAfter)

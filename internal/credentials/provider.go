@@ -11,11 +11,13 @@ const EnvName = "META_API_KEY"
 const maxKeyBytes = 8192
 
 var (
-	ErrMissing     = errors.New("no Meta API key; run `turnbeam key set` or set META_API_KEY")
-	ErrInvalid     = errors.New("invalid Meta API key; expected a nonempty ASCII token without whitespace")
-	ErrNotFound    = errors.New("CLI credential is not stored in Keychain")
-	ErrUnavailable = errors.New("Keychain requires a macOS build with cgo; use META_API_KEY instead")
-	ErrTerminal    = errors.New("`turnbeam key set` needs an interactive terminal")
+	ErrMissing      = errors.New("no Meta API key; run `turnbeam key set` or set META_API_KEY")
+	ErrInvalid      = errors.New("invalid Meta API key; expected a nonempty ASCII token without whitespace")
+	ErrNotFound     = errors.New("CLI credential is not stored in Keychain")
+	ErrUnavailable  = errors.New("Keychain requires a macOS build with cgo; use META_API_KEY instead")
+	ErrTerminal     = errors.New("`turnbeam key set` needs an interactive terminal")
+	ErrKeychain     = errors.New("the macOS Keychain refused access; unlock your login keychain or allow Turnbeam in Keychain Access, or set META_API_KEY")
+	ErrNoKeyEntered = errors.New("no key entered; run `turnbeam key set` again and paste your Meta API key")
 )
 
 // Source identifies availability without exposing the credential itself.

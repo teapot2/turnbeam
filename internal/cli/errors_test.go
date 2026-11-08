@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -28,6 +29,9 @@ func TestErrorClassesDoNotPrintUntrustedCauses(t *testing.T) {
 		{credentials.ErrMissing, configuration}, {pipeline.ErrInput, configuration}, {jobs.ErrCorrupt, configuration},
 		{setup.ErrNotReady, dependency}, {subprocess.ErrStart, dependency},
 		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration},
+		{errors.Join(credentials.ErrNoKeyEntered, io.EOF), configuration},
+		{fmt.Errorf("%w (OSStatus -25293)", credentials.ErrKeychain), dependency},
+		{errors.Join(meta.ErrRetryLater, &meta.Error{Kind: meta.ErrHTTP, StatusCode: 429}), remote},
 		{errors.Join(output.ErrSource, filelock.ErrBusy), storage},
 		{&meta.Error{Kind: meta.ErrHTTP, StatusCode: 401, Code: secret, SessionID: secret}, remote},
 		{errors.Join(meta.ErrTransport, context.DeadlineExceeded), remote},

@@ -3,6 +3,7 @@ package meta
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestMalformedResponses(t *testing.T) {
 		{`"audioDurationMs":1040`, `"audioDurationMs":-1`}, {`"audioDurationMs":1040`, `"audioDurationMs":true`}, {`"audioDurationMs":1040`, `"audioDurationMs":1.5`},
 		{`"turnId":0`, `"turnId":-1`}, {`"turnId":0,`, ""}, {`"turnId":0`, `"turnId":null`}, {`"turnId":0`, `"turnId":0,"turnId":1`},
 		{`"startMs":0,`, ""}, {`"startMs":0`, `"startMs":null`}, {`"startMs":0`, `"startMs":-1`}, {`"startMs":0`, `"startMs":1001`},
-		{`"endMs":1000`, `"endMs":1001`}, {`"endMs":1000`, `"endMs":9223372036854775808`}, {`"endMs":1000`, `"endMs":"1000"`},
+		{`"endMs":1000`, `"endMs":1101`}, {`"endMs":1000`, `"endMs":9223372036854775808`}, {`"endMs":1000`, `"endMs":"1000"`},
 		{`"transcript":"Hello."`, `"transcript":null`}, {`"speaker":"A"`, `"speaker":4`}, {`"speaker":"A"`, `"speaker":{}`},
 		{`"sessionId":`, `"SessionId":`}, {`"sessionId":"local-session",`, `"sessionId":"x","sessionId":"local-session",`},
 	} {
@@ -75,4 +76,22 @@ func FuzzResponse(f *testing.F) {
 			ids[turn.TurnID] = true
 		}
 	})
+}
+
+func TestSmallTurnOvershootIsClipped(t *testing.T) {
+	for _, tc := range []struct{ start, end, wantStart, wantEnd int64 }{
+		{0, 1040, 0, 1000},       // Meta's clip clock runs about 40 ms long
+		{0, 1100, 0, 1000},       // exactly at the tolerance
+		{1050, 1060, 1000, 1000}, // a turn wholly in the overshoot keeps zero duration
+	} {
+		data := strings.Replace(success, `"startMs":0,"endMs":1000`, fmt.Sprintf(`"startMs":%d,"endMs":%d`, tc.start, tc.end), 1)
+		r, err := decodeResponse([]byte(data), 1000)
+		if err != nil || r.Turns[0].StartMS != tc.wantStart || r.Turns[0].EndMS != tc.wantEnd {
+			t.Fatalf("%d-%d: got %+v, %v", tc.start, tc.end, r, err)
+		}
+		encoded, _ := json.Marshal(r)
+		if again, err := decodeResponse(encoded, 1000); err != nil || again.Turns[0].StartMS != tc.wantStart || again.Turns[0].EndMS != tc.wantEnd {
+			t.Fatal("clipped response did not survive a checkpoint round trip", err)
+		}
+	}
 }

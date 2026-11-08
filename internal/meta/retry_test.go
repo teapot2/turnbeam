@@ -103,10 +103,10 @@ func TestBackoffAndCancelableServerWait(t *testing.T) {
 	var calls atomic.Int64
 	p.Transcriber = transcribeFunc(func(context.Context, *media.Clip, string, string) (*Response, error) {
 		calls.Add(1)
-		return nil, &Error{Kind: ErrHTTP, StatusCode: 429, RetryAfter: time.Hour}
+		return nil, &Error{Kind: ErrHTTP, StatusCode: 429, RetryAfter: MaxServerWait}
 	})
 	p.wait = func(ctx context.Context, delay time.Duration) error {
-		if delay != time.Hour {
+		if delay != MaxServerWait {
 			t.Error("server wait was shortened")
 		}
 		close(waiting)
@@ -126,5 +126,23 @@ func TestBackoffAndCancelableServerWait(t *testing.T) {
 	}
 	if err := waitContext(context.Background(), 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOverlongServerWaitStopsInsteadOfStalling(t *testing.T) {
+	p, recording, plan := poolFixture(t, 1)
+	var calls atomic.Int64
+	last := &Error{Kind: ErrHTTP, StatusCode: 429, RetryAfter: MaxServerWait + time.Second}
+	p.Transcriber = transcribeFunc(func(context.Context, *media.Clip, string, string) (*Response, error) {
+		calls.Add(1)
+		return nil, last
+	})
+	p.wait = func(context.Context, time.Duration) error {
+		t.Error("an overlong Retry-After was waited out")
+		return nil
+	}
+	results, err := p.Run(context.Background(), recording, plan, "test-key", Diarization)
+	if results != nil || !errors.Is(err, ErrRetryLater) || !errors.Is(err, last) || calls.Load() != 1 {
+		t.Fatalf("overlong wait: results=%v err=%v calls=%d", results, err, calls.Load())
 	}
 }

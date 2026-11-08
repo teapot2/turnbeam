@@ -62,7 +62,7 @@ func keychainCall(ctx context.Context, operation int, key []byte) ([]byte, error
 	}
 	auth := C.turnbeam_auth_context()
 	if auth == nil {
-		return nil, fmt.Errorf("Keychain authentication context unavailable")
+		return nil, fmt.Errorf("%w: authentication context unavailable", ErrKeychain)
 	}
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
@@ -92,7 +92,7 @@ func keychainCall(ctx context.Context, operation int, key []byte) ([]byte, error
 		return nil, ErrNotFound
 	}
 	if status != 0 {
-		return nil, fmt.Errorf("Keychain operation failed (OSStatus %d); unlock or allow access in Keychain Access", int(status))
+		return nil, fmt.Errorf("%w (OSStatus %d)", ErrKeychain, int(status))
 	}
 	if operation != opLoad {
 		return nil, nil

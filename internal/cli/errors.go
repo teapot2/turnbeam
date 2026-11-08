@@ -45,6 +45,7 @@ func classify(err error) (errorClass, string) {
 		{output.ErrConflict, storage}, {output.ErrSourceChanged, storage},
 		{jobs.ErrCorrupt, configuration}, {jobs.ErrMismatch, configuration}, {jobs.ErrMissing, configuration}, {jobs.ErrBusy, configuration},
 		{credentials.ErrMissing, configuration}, {credentials.ErrInvalid, configuration}, {credentials.ErrTerminal, configuration},
+		{credentials.ErrNoKeyEntered, configuration}, {credentials.ErrKeychain, dependency},
 		{credentials.ErrUnavailable, dependency}, {setup.ErrUnsupportedPlatform, dependency}, {setup.ErrDoctorFailed, dependency},
 		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration},
 		{setup.ErrIntegrity, dependency}, {setup.ErrBusy, dependency}, {setup.ErrNotReady, dependency}, {subprocess.ErrStart, dependency},
@@ -56,6 +57,7 @@ func classify(err error) (errorClass, string) {
 		{output.ErrStorage, storage},
 		{media.ErrNoAudio, configuration}, {media.ErrInvalidMedia, processing}, {media.ErrChunkSize, processing},
 		{diarization.ErrRTTM, processing}, {chunking.ErrPlan, processing},
+		{meta.ErrRetryLater, remote},
 	} {
 		if errors.Is(err, rule.target) {
 			return rule.class, rule.target.Error()
