@@ -46,11 +46,25 @@ guessed.
 
 ## Install
 
+Download a prebuilt binary for Apple Silicon from the
+[releases page](https://github.com/teapot2/turnbeam/releases) (`checksums.txt`
+lists the SHA-256 of each archive), or with the GitHub CLI:
+
 ```sh
-go install github.com/teapot2/turnbeam/cmd/turnbeam@latest
+gh release download --repo teapot2/turnbeam --pattern 'turnbeam_*_darwin_arm64.tar.gz'
+tar -xzf turnbeam_*_darwin_arm64.tar.gz
 ```
 
-Or build from a clone with `go build -o turnbeam ./cmd/turnbeam`.
+Then move `turnbeam` into a folder on your `PATH`. The binary is not notarized,
+so if you downloaded it with a browser, clear macOS's quarantine flag first:
+`xattr -d com.apple.quarantine turnbeam`.
+
+Or build it yourself with Go:
+
+```sh
+go install github.com/teapot2/turnbeam/cmd/turnbeam@latest   # or, from a clone: go install ./cmd/turnbeam
+```
+
 For tab completion in zsh, bash or fish, see `turnbeam completion --help`.
 
 ## Quick start

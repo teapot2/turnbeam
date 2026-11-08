@@ -1,0 +1,43 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 builds the macOS Apple Silicon binary and
+# publishes it as a GitHub release, with notes from CHANGELOG.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    # macos-latest runs on Apple Silicon; the Keychain code needs cgo on macOS.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: make check
+      - run: make vulncheck
+      - name: Require a changelog entry for this version
+        run: |
+          make --no-print-directory release-notes VERSION="$GITHUB_REF_NAME" > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "CHANGELOG.md has no entry for $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - run: make dist VERSION="$GITHUB_REF_NAME"
+      - name: Require the binary to report the tag
+        run: test "$(bin/turnbeam version)" = "turnbeam $GITHUB_REF_NAME"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt
+          --title "Turnbeam $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
