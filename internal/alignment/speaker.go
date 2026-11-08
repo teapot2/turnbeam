@@ -25,11 +25,13 @@ type Policy struct {
 	MinCoveragePercent int
 }
 
-// DefaultPolicy was calibrated against human word-level annotations (AMI
-// meeting ES2002a). Brief interjections no longer force Unknown, a substantial
-// second voice still does, and pauses inside one person's turn are tolerated.
+// DefaultPolicy was calibrated against human word-level annotations for the
+// full AMI meeting ES2002a (210 turns). No threshold mislabeled a turn only one
+// person spoke in; 85% share labels more turns dominated by one speaker than
+// 90% without labeling more turns where someone else spoke over 20%, while 80%
+// nearly doubled those. Pauses inside one person's turn are tolerated.
 func DefaultPolicy() Policy {
-	return Policy{MinSharePercent: 90, MinCoveragePercent: 30}
+	return Policy{MinSharePercent: 85, MinCoveragePercent: 30}
 }
 
 // Align attributes complete assembled turns against one full-recording timeline.

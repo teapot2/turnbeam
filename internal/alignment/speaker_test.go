@@ -29,7 +29,7 @@ func singleTurn(t *testing.T, start, end int64) *transcript.Transcript {
 	return f.assemble(t)
 }
 
-// The turn spans 0.200–1.200 s (1000 ms): the main speaker needs 90% of the
+// The turn spans 0.200–1.200 s (1000 ms): the main speaker needs 85% of the
 // speech inside it and at least 300 ms of coverage. Patterns marked AMI were
 // observed when calibrating against human annotations.
 func TestMainSpeakerShareAndCoverage(t *testing.T) {
@@ -44,8 +44,8 @@ func TestMainSpeakerShareAndCoverage(t *testing.T) {
 		{"AMI: pauses inside one turn", "SPEAKER recording 1 0.200 0.200 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.800 0.200 <NA> <NA> A <NA> <NA>\n", a, nil},
 		{"duplicates cannot inflate coverage", "SPEAKER recording 1 0.200 0.200 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.200 0.200 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.300 0.150 <NA> <NA> A <NA> <NA>\n", "", []string{a}},
 		{"AMI: brief interjection", "SPEAKER recording 1 0.200 1.000 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 1.190 0.010 <NA> <NA> B <NA> <NA>\n", a, nil},
-		{"share at threshold", "SPEAKER recording 1 0.200 0.900 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 1.100 0.100 <NA> <NA> B <NA> <NA>\n", a, nil},
-		{"share one ns below", "SPEAKER recording 1 0.200 0.899999999 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 1.099999999 0.100000001 <NA> <NA> B <NA> <NA>\n", "", []string{a, b}},
+		{"share at threshold", "SPEAKER recording 1 0.200 0.850 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 1.050 0.150 <NA> <NA> B <NA> <NA>\n", a, nil},
+		{"share one ns below", "SPEAKER recording 1 0.200 0.849999999 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 1.049999999 0.150000001 <NA> <NA> B <NA> <NA>\n", "", []string{a, b}},
 		{"AMI: substantial second voice", "SPEAKER recording 1 0.200 1.000 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.500 0.300 <NA> <NA> B <NA> <NA>\n", "", []string{a, b}},
 		{"AMI: real exchange", "SPEAKER recording 1 0.200 0.500 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.700 0.500 <NA> <NA> B <NA> <NA>\n", "", []string{a, b}},
 		{"equal speakers", "SPEAKER recording 1 0.200 1.000 <NA> <NA> A <NA> <NA>\nSPEAKER recording 1 0.200 1.000 <NA> <NA> B <NA> <NA>\n", "", []string{a, b}},
