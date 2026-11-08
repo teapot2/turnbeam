@@ -1,0 +1,49 @@
+# macOS metadata
+.DS_Store
+._*
+
+# Local credentials
+.env
+.env.*
+
+# Go binaries and build/release output
+/turnbeam
+/bin/
+/build/
+/dist/
+*.test
+
+# Coverage and profiling artifacts
+/coverage/
+/coverage.out
+/coverage.html
+*.coverprofile
+*.prof
+
+# Developer-local Go workspace
+/go.work
+/go.work.sum
+
+# Local editor settings
+/.vscode/
+
+# Private agent context and internal workspace references
+/.codex/private-context.md
+
+# Repository-local runtime/model downloads and scratch data
+/runtime/
+/models/
+/.cache/
+/tmp/
+/logs/
+
+# Local validation fixtures and reports; retain on disk, never version
+/testdata/
+
+# Private recordings and generated meeting artifacts
+/samples/
+/outputs/
+/*.transcript.json
+
+# Non-essential project documentation and artifacts
+/docs/

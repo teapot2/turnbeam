@@ -1,0 +1,123 @@
+package cli
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"runtime/debug"
+
+	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/progress"
+
+	"github.com/spf13/cobra"
+)
+
+const (
+	groupTranscripts = "transcripts"
+	groupSetup       = "setup"
+)
+
+const (
+	exitOK       = 0
+	exitFailed   = 1
+	exitUsage    = 2
+	exitCanceled = 130
+)
+
+// Run executes one invocation and returns its exit code. Requested output (the
+// transcript, help, version, key status, completion scripts) goes to stdout;
+// progress and errors go to stderr.
+func Run(ctx context.Context, args []string, version string, stdout, stderr io.Writer) int {
+	version = resolveVersion(version)
+	label := "Error:"
+	if progress.Color(stderr) {
+		label = ansiBold + ansiRed + "Error:" + ansiReset
+	}
+	code := exitUsage
+	root := newRootWithTranscriber(version, &code, stdout, (pipeline.Runner{}).Run)
+	root.SetArgs(args)
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintln(stderr, label, err)
+		return exitCanceled
+	}
+	if err := root.ExecuteContext(ctx); err != nil {
+		var message string
+		code, message = reportFailure(ctx, err, code)
+		fmt.Fprintln(stderr, label, message)
+		return code
+	}
+	return exitOK
+}
+
+func newRoot(version string, code *int) *cobra.Command {
+	return newRootWithTranscriber(version, code, os.Stdout, (pipeline.Runner{}).Run)
+}
+
+type transcribeFunc func(context.Context, string, pipeline.Options, io.Writer, io.Writer) error
+
+func newRootWithTranscriber(version string, code *int, stdout io.Writer, run transcribeFunc) *cobra.Command {
+	var opts transcribeOptions
+	root := &cobra.Command{
+		Use:   "turnbeam <recording>",
+		Short: "Transcribe a prerecorded meeting",
+		Long: "Turnbeam transcribes a meeting recording and labels who spoke when.\n" +
+			"Meta Muse transcribes the audio; speakers are identified locally on your Mac.",
+		Example: "  turnbeam meeting.mp4 -o meeting.md\n" +
+			"  turnbeam meeting.mp4 -f text --timestamps range > meeting.txt\n" +
+			"  turnbeam meeting.mp4 -o meeting.md --resume",
+		Version:       version,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		Args:          recordingOrCommand,
+		// Complete recording paths as files, alongside subcommand names.
+		ValidArgsFunction: func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return nil, cobra.ShellCompDirectiveDefault
+		},
+		PreRunE: func(cmd *cobra.Command, _ []string) error {
+			return opts.validate(cmd)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			*code = exitFailed
+			quiet, _ := cmd.Flags().GetBool("quiet")
+			verbose, _ := cmd.Flags().GetBool("verbose")
+			options := pipeline.Options{Mode: opts.mode, Concurrency: opts.concurrency, Resume: opts.resume, Fresh: opts.fresh, Output: opts.output, InstallDir: opts.installDir}
+			options.Render = opts.render()
+			options.Progress.Quiet, options.Progress.Verbose = quiet, verbose
+			return run(cmd.Context(), args[0], options, stdout, cmd.ErrOrStderr())
+		},
+	}
+	// Cobra's default edit distance; it applies it only on its own unknown-command path.
+	root.SuggestionsMinimumDistance = 2
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return cmd.Context().Err()
+	}
+	root.SetVersionTemplate("{{.Name}} {{.Version}}\n")
+	opts.addFlags(root)
+	root.PersistentFlags().BoolP("quiet", "q", false, "Suppress ordinary progress")
+	root.PersistentFlags().Bool("verbose", false, "Write sanitized diagnostics to stderr")
+	root.AddGroup(
+		&cobra.Group{ID: groupTranscripts, Title: "Work with transcripts:"},
+		&cobra.Group{ID: groupSetup, Title: "Setup and diagnostics:"},
+	)
+	addCommands(root, version, code, stdout)
+	return root
+}
+
+// resolveVersion keeps a version set at link time. Otherwise it uses the module
+// version Go records for `go install …@version` and VCS builds, so bug reports
+// identify the exact build.
+func resolveVersion(version string) string {
+	if version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return version
+}
