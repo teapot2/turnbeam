@@ -29,7 +29,10 @@ type Policy struct {
 // full AMI meeting ES2002a (210 turns). No threshold mislabeled a turn only one
 // person spoke in; 85% share labels more turns dominated by one speaker than
 // 90% without labeling more turns where someone else spoke over 20%, while 80%
-// nearly doubled those. Pauses inside one person's turn are tolerated.
+// nearly doubled those. Pauses inside one person's turn are tolerated. Per
+// annotated word, 65% fall in turns with the right speaker, 1.9% with a wrong
+// one and 30% in Unknown turns; Meta's endpointing mode cut the right share to
+// 38% because its turns run across speakers.
 func DefaultPolicy() Policy {
 	return Policy{MinSharePercent: 85, MinCoveragePercent: 30}
 }

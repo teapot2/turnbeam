@@ -64,7 +64,7 @@ type transcribeOptions struct {
 
 func (o *transcribeOptions) addFlags(cmd *cobra.Command) {
 	o.outputOptions.addFlags(cmd)
-	cmd.Flags().StringVar(&o.mode, "mode", "diarization", "Meta mode: diarization, endpointing")
+	cmd.Flags().StringVar(&o.mode, "mode", "diarization", "Meta mode: diarization (best speaker labels), endpointing")
 	cmd.Flags().IntVar(&o.concurrency, "concurrency", meta.DefaultConcurrency, "Maximum concurrent Meta requests")
 	cmd.Flags().BoolVar(&o.resume, "resume", false, "Continue an interrupted run without repeating paid work")
 	cmd.Flags().BoolVar(&o.fresh, "fresh", false, "Start over instead of resuming (repeats paid work)")
