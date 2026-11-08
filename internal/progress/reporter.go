@@ -32,6 +32,9 @@ type Reporter struct {
 	now func() time.Time
 	// Download bar state.
 	drawn, downloadStart time.Time
+	downloadTitle        string
+	downloadBase         int64
+	downloadAttempt      int
 	// Pipeline step state; step is -1 when no step is active.
 	step                 int
 	stepStart            time.Time

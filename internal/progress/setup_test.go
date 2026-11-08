@@ -107,3 +107,33 @@ func TestSetupPlainLinesQuietAndValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupResumeRetryAndCachedLines(t *testing.T) {
+	var out bytes.Buffer
+	r := New(&out, Options{})
+	runtime := setup.Progress{Step: setup.StepDownload, Title: "NeMo-Speech.cpp runtime", Source: "https://github.com/NVIDIA/NeMo-Speech.cpp/runtime.tar.gz", Total: 7_000_000}
+	cached := runtime
+	cached.Done = cached.Total
+	resumed := model(40_000_000)
+	resumed.Attempt = 1
+	retry := model(60_000_000)
+	retry.Attempt = 2
+	done := model(100_000_000)
+	done.Attempt = 2
+	for _, p := range []setup.Progress{cached, resumed, retry, done} {
+		if err := r.Setup(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "==> NeMo-Speech.cpp runtime\n    https://github.com/NVIDIA/NeMo-Speech.cpp/runtime.tar.gz\n    Already downloaded\n" +
+		"==> Nemotron 3 diarization model\n    " + modelURL + "\n    resuming at 40.0 MB of 100.0 MB\n" +
+		"    connection problem; retrying (attempt 2 of 4), resuming at 60.0 MB\n    Downloaded 100.0 MB\n"
+	if out.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", out.String(), want)
+	}
+	bad := model(0)
+	bad.Attempt = setup.DownloadAttempts + 1
+	if err := New(&out, Options{}).Setup(bad); !errors.Is(err, ErrEvent) {
+		t.Fatal("impossible attempt accepted")
+	}
+}

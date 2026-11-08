@@ -16,7 +16,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,7 +120,8 @@ func newFixture(t *testing.T, mode string) *fixture {
 	}
 	f.manager = Manager{
 		Dir: filepath.Join(t.TempDir(), "managed"), Client: server.Client(), pins: &c,
-		system: func() (string, string) { return "darwin", "arm64" },
+		system:     func() (string, string) { return "darwin", "arm64" },
+		retryDelay: func(int) time.Duration { return 0 },
 		command: func(ctx context.Context, tool string, args ...string) *exec.Cmd {
 			if filepath.Base(tool) == "nemo-speech" {
 				f.native.Add(1)
@@ -393,7 +397,8 @@ func TestFailedActivationDoesNotPublishInstallation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name() != "current.json" && entry.Name() != "setup.lock" {
+		// Verified downloads are kept so the next attempt does not repeat them.
+		if entry.Name() != "current.json" && entry.Name() != "setup.lock" && entry.Name() != downloadsDir {
 			t.Fatalf("uncommitted installation remains: %s", entry.Name())
 		}
 	}
@@ -549,7 +554,7 @@ func TestDownloadPoliciesAndBounds(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer root.Close()
-			err = (Manager{Client: server.Client()}).download(context.Background(), root, a)
+			err = (Manager{Client: server.Client(), retryDelay: func(int) time.Duration { return 0 }}).download(context.Background(), root, a)
 			if err == nil {
 				t.Fatal("unsafe or malformed download accepted")
 			}
@@ -656,5 +661,139 @@ func TestInstallReportsProgressWithoutURLs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, []Progress{{Step: StepCheck}, {Step: StepCompatibility}}) {
 		t.Fatalf("a verified installation should only be checked: %+v", events)
+	}
+}
+
+// flakyServer serves body, cutting off or stalling the first response, and
+// records each request's Range header.
+func flakyServer(t *testing.T, body []byte, honorRange bool, firstResponse string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var ranges []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		ranges = append(ranges, r.Header.Get("Range"))
+		n := len(ranges)
+		mu.Unlock()
+		start := 0
+		if honorRange && r.Header.Get("Range") != "" {
+			fmt.Sscanf(r.Header.Get("Range"), "bytes=%d-", &start)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(body)-1, len(body)))
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)-start))
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		}
+		if n == 1 {
+			switch firstResponse {
+			case "cut":
+				w.Write(body[:len(body)/2]) // short body: the server closes the connection
+				return
+			case "stall":
+				w.Write(body[:len(body)/2])
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			case "503":
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			case "404":
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
+		w.Write(body[start:])
+	}))
+	t.Cleanup(server.Close)
+	return server, &ranges
+}
+
+func TestDownloadResumesRetriesAndStalls(t *testing.T) {
+	body := bytes.Repeat([]byte("turnbeam"), 4096)
+	sum := sha256.Sum256(body)
+	for _, tc := range []struct {
+		name, first string
+		honorRange  bool
+		ok          bool
+		ranges      []string
+	}{
+		{"cut connection resumes", "cut", true, true, []string{"", fmt.Sprintf("bytes=%d-", len(body)/2)}},
+		{"server ignoring range restarts", "cut", false, true, []string{"", fmt.Sprintf("bytes=%d-", len(body)/2)}},
+		{"stall is retried", "stall", true, true, []string{"", fmt.Sprintf("bytes=%d-", len(body)/2)}},
+		{"server error is retried", "503", true, true, []string{"", ""}},
+		{"not found is final", "404", true, false, []string{""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, ranges := flakyServer(t, body, tc.honorRange, tc.first)
+			root, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			var attempts []int
+			m := Manager{Client: server.Client(), retryDelay: func(int) time.Duration { return 0 }, stallTimeout: 200 * time.Millisecond,
+				OnProgress: func(p Progress) { attempts = append(attempts, p.Attempt) }}
+			a := artifact{name: "model.gguf", url: server.URL + "/model.gguf", sha256: hex.EncodeToString(sum[:]), size: int64(len(body))}
+			err = m.download(context.Background(), root, a)
+			if (err == nil) != tc.ok || !reflect.DeepEqual(*ranges, tc.ranges) {
+				t.Fatalf("err=%v ranges=%q", err, *ranges)
+			}
+			if !tc.ok {
+				return
+			}
+			if verifyAsset(context.Background(), root, a) != nil {
+				t.Fatal("downloaded file did not verify")
+			}
+			if _, err := root.Lstat(a.name + partSuffix); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("partial file left after success")
+			}
+			if attempts[len(attempts)-1] != 2 {
+				t.Fatalf("retry not reported: %v", attempts)
+			}
+		})
+	}
+}
+
+func TestInstallOrderCacheAndCleanup(t *testing.T) {
+	f := newFixture(t, "")
+	var totals []int64
+	f.manager.OnProgress = func(p Progress) {
+		if p.Step == StepDownload && p.Done == 0 {
+			totals = append(totals, p.Total)
+		}
+	}
+	first, err := f.manager.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.IsSorted(totals) || len(totals) != 4 {
+		t.Fatalf("downloads were not smallest first: %v", totals)
+	}
+	if _, err := os.Stat(filepath.Join(f.manager.Dir, downloadsDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("download cache kept after a successful install")
+	}
+	// Two repairs: the oldest generation is pruned, the previous one is kept.
+	var generations []string
+	for range 2 {
+		installed, err := f.manager.Install(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(installed.Model, []byte("damaged"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		generations = append(generations, installed.Directory)
+	}
+	if err := os.Mkdir(filepath.Join(f.manager.Dir, ".stage-killed"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := f.manager.Install(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for dir, want := range map[string]bool{first.Directory: false, generations[1]: true, latest.Directory: true, filepath.Join(f.manager.Dir, ".stage-killed"): false} {
+		if _, err := os.Stat(dir); (err == nil) != want {
+			t.Fatalf("%s kept=%v, want %v", filepath.Base(dir), err == nil, want)
+		}
 	}
 }

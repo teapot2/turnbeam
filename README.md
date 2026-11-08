@@ -62,7 +62,9 @@ turnbeam key set                            # save your Meta API key in the Keyc
 turnbeam meeting.mp4 --output meeting.md    # transcribe
 ```
 
-A nonempty `META_API_KEY` environment variable takes precedence over Keychain.
+If `setup` is interrupted or loses its connection, run it again: it resumes
+where it stopped. A nonempty `META_API_KEY` environment variable takes
+precedence over Keychain.
 Any file with an audio track that FFmpeg can decode works as input.
 
 ## Example output

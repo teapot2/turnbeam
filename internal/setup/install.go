@@ -1,16 +1,20 @@
 package setup
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Manager owns a dedicated installation directory. Zero values use the pinned
@@ -20,9 +24,12 @@ type Manager struct {
 	Client *http.Client
 	// OnProgress, if set, receives Install activity on the calling goroutine.
 	OnProgress func(Progress)
-	pins       *catalog
-	system     func() (string, string)
-	command    func(context.Context, string, ...string) *exec.Cmd
+	// retryDelay and stallTimeout override download timing in tests.
+	retryDelay   func(attempt int) time.Duration
+	stallTimeout time.Duration
+	pins         *catalog
+	system       func() (string, string)
+	command      func(context.Context, string, ...string) *exec.Cmd
 }
 
 // Installation identifies a fully verified, committed runtime/model pair.
@@ -216,6 +223,7 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 		return Installation{}, err
 	}
 	defer lock.Close()
+	removeStale(root)
 	pins := m.catalog()
 	previous, _ := openCurrent(root)
 	if previous != nil {
@@ -251,23 +259,29 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 		return Installation{}, err
 	}
 	defer stage.Close()
-	for _, a := range pins.assets {
-		reused := false
-		if previous != nil && verifyAsset(ctx, previous, a) == nil {
-			f, err := previous.Open(a.name)
-			if err == nil {
-				err = saveAsset(ctx, stage, a, f)
-				f.Close()
-				if err != nil {
-					return Installation{}, fmt.Errorf("reuse %s: %w", a.name, err)
-				}
-				reused = true
-			}
-		}
-		if !reused {
-			if err := m.download(ctx, stage, a); err != nil {
+	downloads, err := privateSubdirectory(root, downloadsDir)
+	if err != nil {
+		return Installation{}, err
+	}
+	defer downloads.Close()
+	// Fetch small files first so a failure on the large model costs the least.
+	assets := slices.SortedFunc(slices.Values(pins.assets), func(x, y artifact) int { return cmp.Compare(x.size, y.size) })
+	for _, a := range assets {
+		source := previous
+		if previous == nil || verifyAsset(ctx, previous, a) != nil {
+			if err := m.download(ctx, downloads, a); err != nil {
 				return Installation{}, err
 			}
+			source = downloads
+		}
+		f, err := source.Open(a.name)
+		if err != nil {
+			return Installation{}, err
+		}
+		err = saveAsset(ctx, stage, a, f)
+		f.Close()
+		if err != nil {
+			return Installation{}, fmt.Errorf("stage %s: %w", a.name, err)
 		}
 	}
 	if err := stage.Mkdir("runtime", 0700); err != nil {
@@ -311,7 +325,53 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 		return Installation{}, err
 	}
 	committed = true
+	keep := []string{generation}
+	if previous != nil {
+		keep = append(keep, filepath.Base(previous.Name()))
+	}
+	// Best effort: the new installation is already active.
+	root.RemoveAll(downloadsDir)
+	pruneGenerations(root, keep)
 	return paths(filepath.Join(dir, generation)), nil
+}
+
+// downloadsDir holds verified and partial downloads between setup attempts.
+const downloadsDir = "downloads"
+
+func privateSubdirectory(root *os.Root, name string) (*os.Root, error) {
+	if err := root.Mkdir(name, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	stat, err := root.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !stat.IsDir() || stat.Mode().Perm() != 0700 {
+		return nil, fmt.Errorf("%w: %s must be a private directory", ErrIntegrity, name)
+	}
+	return root.OpenRoot(name)
+}
+
+// removeStale deletes staging leftovers of setups that were killed before
+// cleanup. Callers hold the installation lock, so none of them is in use.
+func removeStale(root *os.Root) {
+	entries, _ := fs.ReadDir(root.FS(), ".")
+	for _, entry := range entries {
+		if name := entry.Name(); strings.HasPrefix(name, ".stage-") || strings.HasPrefix(name, ".current-") {
+			root.RemoveAll(name)
+		}
+	}
+}
+
+// pruneGenerations keeps the active installation and the one before it, which
+// a transcription started earlier may still be running from.
+func pruneGenerations(root *os.Root, keep []string) {
+	entries, _ := fs.ReadDir(root.FS(), ".")
+	for _, entry := range entries {
+		if name := entry.Name(); strings.HasPrefix(name, "install-") && !slices.Contains(keep, name) {
+			root.RemoveAll(name)
+		}
+	}
 }
 
 func publishPointer(root *os.Root, data []byte) (err error) {

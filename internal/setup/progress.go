@@ -19,6 +19,9 @@ type Progress struct {
 	Step          ProgressStep
 	Title, Source string
 	Done, Total   int64
+	// Attempt counts tries of the same download, starting at 1; Done may start
+	// above zero when a partial download resumes.
+	Attempt int
 }
 
 func (m Manager) report(p Progress) {
