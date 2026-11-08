@@ -15,8 +15,8 @@ Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare med
 - Preserve versioned canonical JSON and offline rename/export. Resume only compatible checkpoints. Write artifacts atomically; never report incomplete multi-file output as complete.
 
 ## Verification
-- Formatting/imports: `make fmt` fixes non-ignored Go sources; `make fmt-check` checks without rewriting files and runs in CI. The `goimports` development tool is pinned in `go.mod`/`go.sum`.
-- For Go changes: `gofmt`, then `go test ./...`, `go vet ./...`, and `go build ./...` from the module root. Run `go test -race ./...` for concurrency changes and before release.
+- Formatting/imports: `make fmt` fixes non-ignored Go sources; `make fmt-check` checks without rewriting files. The `goimports` and `govulncheck` tools are pinned in `go.mod`/`go.sum`.
+- For Go changes: run `make check` (format check, `go vet`, `go test -race`, build) from the module root; CI runs the same targets plus `make vulncheck`.
 - Use focused standard-library tests (`t.TempDir`, `httptest`, subprocess fakes). Default tests must be offline, deterministic, and independent of local data.
 - Optional native media checks: `TURNBEAM_TEST_NATIVE_MEDIA=1 go test ./internal/media -run TestNativeMedia` (FFmpeg/FFprobe required; generated local media only).
 - Optional local pipeline checks: `TURNBEAM_TEST_NATIVE_PIPELINE=1 go test ./internal/pipeline -run TestNativePipeline -v` (installed FFmpeg and managed Metal runtime/model required; generated MP4 by default, optional `TURNBEAM_NATIVE_AUDIO`/`TURNBEAM_NATIVE_INSTALL_DIR`; transcription is always mocked locally).

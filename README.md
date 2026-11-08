@@ -118,9 +118,10 @@ Then delete the `turnbeam` binary (`$(go env GOPATH)/bin/turnbeam` if you used
 ## Development
 
 ```sh
-make fmt-check            # formatting and imports (make fmt fixes them)
-go vet ./...
-go test -race ./...
+make check       # formatting, vet, race tests and build, as CI runs them
+make fmt         # fix formatting and imports
+make vulncheck   # scan for known vulnerabilities (needs network)
+make build       # build ./bin/turnbeam
 ```
 
 Default tests are offline and need no recordings, model or API key. Optional
