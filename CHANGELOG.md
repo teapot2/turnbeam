@@ -7,6 +7,8 @@ minor versions may change the CLI or the transcript JSON schema.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-08
+
 ### Changed
 
 - Transcribing saves the transcript next to the recording by default
@@ -70,6 +72,7 @@ First release, for macOS on Apple Silicon.
 - Live progress, shell completion for zsh, bash and fish, and suggestions for
   mistyped commands.
 
-[Unreleased]: https://github.com/teapot2/turnbeam/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/teapot2/turnbeam/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/teapot2/turnbeam/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/teapot2/turnbeam/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/teapot2/turnbeam/releases/tag/v0.1.0
