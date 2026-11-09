@@ -18,6 +18,11 @@ minor versions may change the CLI or the transcript JSON schema.
   by side. `turnbeam models` lists every model and whether it is ready, and
   `doctor` checks installed ones. With a local model installed, a missing Meta
   key no longer fails `doctor`.
+- `turnbeam mcp` serves Turnbeam's tools to AI assistants over the Model
+  Context Protocol on stdin and stdout: find recordings by folder and date,
+  transcribe in the background with progress, read a transcript or a time range
+  of it, rename speakers, export, and check the installation. Tools read and
+  write only under `--root` (default: the home folder) and never overwrite.
 
 ### Changed
 

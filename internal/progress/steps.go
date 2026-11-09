@@ -42,6 +42,21 @@ var stages = [...]string{
 	AlignWords:      "Matching words to speakers",
 }
 
+// String is the step's fixed label; unknown stages have none.
+func (s Stage) String() string {
+	if int(s) < len(stages) {
+		return stages[s]
+	}
+	return ""
+}
+
+// observe forwards an event to the observer, if any. Callers hold r.mu.
+func (r *Reporter) observe(event Event) {
+	if r.opts.Observer != nil {
+		r.opts.Observer(event)
+	}
+}
+
 const (
 	labelWidth  = 30
 	chunkBar    = 16
@@ -64,6 +79,7 @@ func (r *Reporter) Stage(ctx context.Context, stage Stage) error {
 	}
 	r.finishStep()
 	r.step, r.stepStart, r.result, r.activity = int(stage), r.clock(), "", ""
+	r.observe(Event{Stage: stage})
 	if r.err != nil || r.opts.Quiet {
 		return nil
 	}
@@ -122,6 +138,7 @@ func (r *Reporter) TranscribeStarting(chunks, done int) error {
 	defer r.mu.Unlock()
 	r.chunks, r.cached, r.done, r.active = chunks, done, done, 0
 	r.activity = "preparing audio"
+	r.observe(Event{Stage: Transcribe, Done: done, Total: chunks})
 	if done > 0 && !r.opts.Quiet {
 		return r.line(fmt.Sprintf("%sresuming: %d of %s already transcribed", indent, done, count(chunks, "chunk")))
 	}
@@ -178,6 +195,7 @@ func (r *Reporter) Transcription(ctx context.Context, event meta.Progress) error
 		}
 	case meta.ProgressCompleted:
 		r.activity = fmt.Sprintf("chunk %d done", chunk)
+		r.observe(Event{Stage: Transcribe, Done: r.done, Total: r.chunks})
 		if !r.tty && !r.opts.Quiet {
 			return r.line(fmt.Sprintf("%schunk %d done (%d/%d)", indent, chunk, r.done, r.chunks))
 		}

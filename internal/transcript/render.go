@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -42,6 +43,24 @@ var (
 type RenderOptions struct {
 	Format     Format
 	Timestamps Timestamps
+}
+
+// FormatForExtension maps an output file's extension (.md, .markdown, .txt,
+// .json, .srt, .vtt) to its format, so a destination name can pick the format.
+func FormatForExtension(path string) (Format, bool) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".srt":
+		return FormatSRT, true
+	case ".vtt":
+		return FormatVTT, true
+	case ".json":
+		return FormatJSON, true
+	case ".txt":
+		return FormatText, true
+	case ".md", ".markdown":
+		return FormatMarkdown, true
+	}
+	return "", false
 }
 
 // Validate checks presentation choices without requiring transcript data or I/O.

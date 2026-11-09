@@ -12,10 +12,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func addCommands(root *cobra.Command, version string, code *int, stdout io.Writer) {
-	addSetupCommands(root, code, func(dir string, models []string, onProgress func(setup.Progress)) setupService {
+func addCommands(root *cobra.Command, version string, code *int, stdout io.Writer, run transcribeFunc) {
+	factory := func(dir string, models []string, onProgress func(setup.Progress)) setupService {
 		return setup.Manager{Dir: dir, Models: models, OnProgress: onProgress}
-	}, credentials.Provider{}.Status)
+	}
+	keys := credentials.Provider{}.Status
+	addSetupCommands(root, code, factory, keys)
+	root.AddCommand(newMCPCmd(version, code, stdout, run, factory, keys))
 	root.AddCommand(&cobra.Command{
 		Use: "version", Short: "Print the application version", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {

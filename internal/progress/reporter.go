@@ -15,7 +15,21 @@ import (
 var ErrEvent = errors.New("invalid progress event")
 
 // Options controls presentation only, never inference or recovery compatibility.
-type Options struct{ Quiet, Verbose bool }
+type Options struct {
+	Quiet, Verbose bool
+	// Observer, when set, receives every step change and chunk count, even in
+	// quiet mode, for callers that show progress somewhere other than stderr.
+	// It is called with the reporter locked, so it must return promptly and
+	// must not call the reporter.
+	Observer func(Event)
+}
+
+// Event is one structured progress update: the step that is running and, in
+// the Meta transcription step, how many chunks of how many are done.
+type Event struct {
+	Stage       Stage
+	Done, Total int
+}
 
 // Reporter writes progress to stderr. On a terminal it keeps a log of finished
 // steps and redraws one live line for the current step, ticking every 100 ms so

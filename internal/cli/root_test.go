@@ -34,7 +34,7 @@ func TestHelpAndVersion(t *testing.T) {
 		{"--help"}, {"help"}, {"setup", "--help"}, {"doctor", "--help"},
 		{"key"}, {"key", "set", "--help"}, {"key", "status", "--help"},
 		{"key", "remove", "--help"}, {"speakers"}, {"speakers", "rename", "--help"},
-		{"export", "--help"}, {"version", "--help"},
+		{"export", "--help"}, {"version", "--help"}, {"mcp", "--help"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			code, stdout, stderr := invokeStreams(context.Background(), args...)

@@ -151,6 +151,26 @@ in place; exporting never overwrites an existing file. Both run offline.
 
 Exit codes: `0` success, `1` failure, `2` invalid usage, `130` canceled.
 
+## Use from an AI assistant
+
+`turnbeam mcp` serves Turnbeam's tools over the
+[Model Context Protocol](https://modelcontextprotocol.io), so an assistant
+such as Claude Desktop can find a recording, transcribe it and read the
+transcript when you ask. In Claude Desktop's `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "turnbeam": { "command": "turnbeam", "args": ["mcp"] } } }
+```
+
+In Claude Code: `claude mcp add turnbeam -- turnbeam mcp`.
+
+The tools find recordings by folder and date, transcribe in the background,
+read a transcript or part of it, rename speakers, export, and check the
+installation. They stay under `--root` (default: your home folder), never
+overwrite files and never see your key, so run `setup` and `key set` first.
+The server runs only on your Mac, but the transcript text it returns goes to
+whichever assistant and model provider you connected; that choice is yours.
+
 ## Privacy
 
 - Meta receives only the audio chunks, with your API key for authentication.
@@ -160,6 +180,8 @@ Exit codes: `0` success, `1` failure, `2` invalid usage, `130` canceled.
   speakers are distinguished.
 - Checkpoints of Meta runs in `~/Library/Caches/turnbeam/jobs` contain
   transcript text and are never deleted automatically. Local runs write none.
+- Through `turnbeam mcp`, transcript text goes to whichever assistant you
+  connected, and from there to its model provider.
 
 ## Uninstall
 

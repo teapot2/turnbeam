@@ -3,6 +3,8 @@ package progress
 import (
 	"bytes"
 	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -164,5 +166,26 @@ func TestDurationFormats(t *testing.T) {
 		if got := stopwatch(d); got != want {
 			t.Fatalf("stopwatch(%v) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+func TestObserverSeesStepsAndChunksEvenWhenQuiet(t *testing.T) {
+	var events []Event
+	var stderr bytes.Buffer
+	r := New(&stderr, Options{Quiet: true, Observer: func(e Event) { events = append(events, e) }})
+	ctx := context.Background()
+	if err := errors.Join(r.Stage(ctx, Probe), r.Stage(ctx, Transcribe), r.TranscribeStarting(3, 1),
+		r.Transcription(ctx, meta.Progress{Kind: meta.ProgressCompleted, Total: 2, Completed: 1, Chunk: 1}), r.Close()); err != nil {
+		t.Fatal(err)
+	}
+	want := []Event{{Stage: Probe}, {Stage: Transcribe}, {Stage: Transcribe, Done: 1, Total: 3}, {Stage: Transcribe, Done: 2, Total: 3}}
+	if !slices.Equal(events, want) {
+		t.Fatalf("events = %+v, want %+v", events, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatal("quiet mode wrote progress")
+	}
+	if Transcribe.String() != "Transcribing with Meta Muse" || Stage(255).String() != "" {
+		t.Fatal("stage labels", Transcribe.String(), Stage(255).String())
 	}
 }

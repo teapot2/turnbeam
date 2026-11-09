@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	groupTranscripts = "transcripts"
-	groupSetup       = "setup"
+	groupTranscripts  = "transcripts"
+	groupSetup        = "setup"
+	groupIntegrations = "integrations"
 )
 
 const (
@@ -111,8 +112,9 @@ func newRootWithTranscriber(version string, code *int, stdout io.Writer, run tra
 	root.AddGroup(
 		&cobra.Group{ID: groupTranscripts, Title: "Work with transcripts:"},
 		&cobra.Group{ID: groupSetup, Title: "Setup and diagnostics:"},
+		&cobra.Group{ID: groupIntegrations, Title: "Integrations:"},
 	)
-	addCommands(root, version, code, stdout)
+	addCommands(root, version, code, stdout, run)
 	return root
 }
 

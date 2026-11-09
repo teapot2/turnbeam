@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -47,7 +46,7 @@ func (o outputOptions) render() transcript.RenderOptions {
 // output extension (.srt, .vtt, .json, .txt, .md) selects the format.
 func (o *outputOptions) validate(cmd *cobra.Command) error {
 	if !cmd.Flags().Changed("format") {
-		if format, ok := formatForExtension(o.output); ok {
+		if format, ok := transcript.FormatForExtension(o.output); ok {
 			o.format = string(format)
 		}
 	}
@@ -195,20 +194,4 @@ func onePath(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("input path must not be empty")
 	}
 	return nil
-}
-
-func formatForExtension(path string) (transcript.Format, bool) {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".srt":
-		return transcript.FormatSRT, true
-	case ".vtt":
-		return transcript.FormatVTT, true
-	case ".json":
-		return transcript.FormatJSON, true
-	case ".txt":
-		return transcript.FormatText, true
-	case ".md", ".markdown":
-		return transcript.FormatMarkdown, true
-	}
-	return "", false
 }
