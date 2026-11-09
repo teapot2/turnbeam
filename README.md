@@ -82,7 +82,8 @@ turnbeam meeting.mp4 --output meeting.md    # transcribe
 
 If `setup` is interrupted or loses its connection, run it again: it resumes
 where it stopped. A nonempty `META_API_KEY` environment variable takes
-precedence over Keychain.
+precedence over Keychain. To transcribe without Meta or a key, see
+[Transcribe on your Mac](#transcribe-on-your-mac).
 Any file with an audio track that FFmpeg can decode works as input.
 
 ## Example output
@@ -119,7 +120,7 @@ the default. Local runs are not checkpointed, so `--resume` does not apply.
 
 | Model | Runs | Languages | On the AMI calibration meeting |
 | --- | --- | --- | --- |
-| `meta` (default) | Meta API | many | 27% word errors; 65% of words with the right speaker, 1.9% wrong |
+| `meta` (default) | Meta API | see Meta's documentation | 27% word errors; 65% of words with the right speaker, 1.9% wrong |
 | `parakeet` | on device, under 1 min for 21 min of audio | 25 European | 26% word errors; 76% right, 1.5% wrong |
 | `nemotron-3.5` | on device, about 2 min | multilingual, incl. Chinese, Japanese, Hindi, Arabic | 30% word errors; 75% right, 1.5% wrong |
 
@@ -147,8 +148,8 @@ Exit codes: `0` success, `1` failure, `2` invalid usage, `130` canceled.
   a local model, nothing leaves your Mac.
 - Speaker labels are model guesses, not verified identities, and at most eight
   speakers are distinguished.
-- Checkpoints in `~/Library/Caches/turnbeam/jobs` contain transcript text and
-  are never deleted automatically.
+- Checkpoints of Meta runs in `~/Library/Caches/turnbeam/jobs` contain
+  transcript text and are never deleted automatically. Local runs write none.
 
 ## Uninstall
 
