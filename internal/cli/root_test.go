@@ -126,6 +126,33 @@ func TestModelIsForwardedAndDefaultsFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestOutputDefaultsNextToTheRecording(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"rec/meeting.wav"}, filepath.Join("rec", "meeting.md")},
+		{[]string{"rec/meeting.wav", "-f", "srt"}, filepath.Join("rec", "meeting.srt")},
+		{[]string{"rec/meeting.wav", "-f", "text"}, filepath.Join("rec", "meeting.txt")},
+		{[]string{"rec/meeting.wav", "-f", "json"}, filepath.Join("rec", "meeting.transcript.json")},
+		{[]string{"rec/meeting.wav", "-o", "out.vtt"}, "out.vtt"},
+		{[]string{"rec/meeting.wav", "-o", "-"}, ""},
+		{[]string{"rec/meeting.wav", "-o", "-", "-f", "json"}, ""},
+	} {
+		code := 2
+		var got pipeline.Options
+		root := newRootWithTranscriber("test", &code, io.Discard, func(_ context.Context, _ string, o pipeline.Options, _, _ io.Writer) error {
+			got = o
+			return nil
+		})
+		root.SetArgs(tc.args)
+		root.SetErr(io.Discard)
+		if err := root.ExecuteContext(context.Background()); err != nil || got.Output != tc.want {
+			t.Fatalf("%v: output %q, want %q (%v)", tc.args, got.Output, tc.want, err)
+		}
+	}
+}
+
 func TestModelsCommandListsEveryModel(t *testing.T) {
 	code := 2
 	root := newRoot("test", &code)

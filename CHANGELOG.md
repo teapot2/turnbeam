@@ -7,6 +7,20 @@ minor versions may change the CLI or the transcript JSON schema.
 
 ## [Unreleased]
 
+### Changed
+
+- Transcribing saves the transcript next to the recording by default
+  (`meeting.md` and `meeting.transcript.json` for `meeting.mp4`, or the
+  `--format`'s extension) instead of printing it. Use `--output -` to print to
+  stdout. `export` still prints by default and also accepts `--output -`.
+- A transcript whose name is taken is saved under the next free numbered name
+  (`meeting-2.md` with `meeting-2.transcript.json`) instead of failing, also
+  when another file takes the name during the run. Existing files are still
+  never overwritten. `export` still refuses a taken name.
+- Turnbeam prints where it saved each transcript. When the name was taken, it
+  says which file was in the way, even with `--quiet`. The MCP `transcribe`
+  tool picks the numbered name too and reports the paths it actually wrote.
+
 ## [0.2.0] - 2026-11-08
 
 ### Added

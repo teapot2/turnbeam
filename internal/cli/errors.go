@@ -61,7 +61,7 @@ func classify(err error) (errorClass, string) {
 		return dependency, model.Error()
 	}
 	for _, rule := range append(slices.Clone(cleanupFailures), []rule{
-		{output.ErrConflict, storage}, {output.ErrSourceChanged, storage},
+		{output.ErrConflict, storage}, {output.ErrNoFreeName, storage}, {output.ErrSourceChanged, storage},
 		{jobs.ErrCorrupt, configuration}, {jobs.ErrMismatch, configuration}, {jobs.ErrMissing, configuration}, {jobs.ErrBusy, configuration},
 		{credentials.ErrMissing, configuration}, {credentials.ErrInvalid, configuration}, {credentials.ErrTerminal, configuration},
 		{credentials.ErrNoKeyEntered, configuration}, {credentials.ErrKeychain, dependency},

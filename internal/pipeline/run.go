@@ -72,6 +72,9 @@ type Options struct {
 	Progress      progress.Options
 	// InstallDir locates the managed runtime/model; empty uses setup.DefaultDir.
 	InstallDir string
+	// Saved, when set, receives the published transcript and sidecar paths. They
+	// differ from Output when that name was taken. It is not called for stdout.
+	Saved func(path, sidecar string)
 }
 
 // Run writes no transcript until all processing and owned-resource cleanup succeed.
@@ -135,6 +138,12 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 	}
 	// Diagnostics only: the transcript is already published.
 	reporter.Summary(len(canonical.Turns), len(canonical.Speakers), unknown, time.Since(started))
+	if path := destination.Path(); path != "" {
+		reporter.Saved(path, destination.Conflict())
+		if opts.Saved != nil {
+			opts.Saved(path, destination.Sidecar())
+		}
+	}
 	return nil
 }
 

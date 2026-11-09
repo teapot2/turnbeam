@@ -7,8 +7,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ErrEvent rejects unknown activities and inconsistent counters before output.
@@ -171,6 +176,34 @@ func (r *Reporter) Summary(turns, speakers, unknown int, elapsed time.Duration) 
 		message = "\x1b[32m" + message + "\x1b[0m"
 	}
 	return r.line(message + ".")
+}
+
+// Saved reports where a published transcript was written. When an existing
+// file (conflict) moved it to a numbered name, that is reported even in quiet
+// mode, naming the existing file.
+func (r *Reporter) Saved(path, conflict string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return io.ErrClosedPipe
+	}
+	r.finishStep()
+	if r.err != nil || r.opts.Quiet && conflict == "" {
+		return nil
+	}
+	message := "Saved to " + displayPath(path) + "."
+	if conflict != "" {
+		message = fmt.Sprintf("Saved to %s because %s already exists.", displayPath(path), displayPath(filepath.Base(conflict)))
+	}
+	return r.line(message)
+}
+
+// displayPath quotes paths that would write control characters to a terminal.
+func displayPath(path string) string {
+	if !utf8.ValidString(path) || strings.IndexFunc(path, unicode.IsControl) >= 0 {
+		return strconv.Quote(path)
+	}
+	return path
 }
 
 func count(n int, noun string) string {

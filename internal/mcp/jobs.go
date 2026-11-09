@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/output"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/progress"
 	"github.com/teapot2/turnbeam/internal/setup"
@@ -76,8 +78,11 @@ type job struct {
 	cancel  context.CancelFunc
 
 	id, input, output, sidecar, model string
-	render                            transcript.RenderOptions
-	resume                            bool
+	// requested is the output asked for; output is a free numbered name when
+	// that one is taken, and is updated if another writer takes it meanwhile.
+	requested, note string
+	render          transcript.RenderOptions
+	resume          bool
 
 	state                      jobState
 	created, started, finished time.Time
@@ -149,6 +154,9 @@ func (t *jobTable) start(j *job) {
 	j.id = hex.EncodeToString(nonce[:])
 	j.state, j.created, j.changed = stateQueued, time.Now(), make(chan struct{})
 	j.hint = "Call job_status with this job_id to wait for the result."
+	if j.note != "" {
+		j.hint = j.note + " " + j.hint
+	}
 	ctx, cancel := context.WithCancel(t.ctx)
 	j.cancel = cancel
 	t.mu.Lock()
@@ -226,12 +234,17 @@ func (t *jobTable) wait() { t.wg.Wait() }
 // runJob transcribes one recording and records the outcome on the job.
 func (s *Server) runJob(ctx context.Context, j *job) {
 	j.update(func() { j.state, j.started = stateRunning, time.Now() })
-	opts := pipeline.Options{Model: j.model, Output: j.output, Render: j.render, Resume: j.resume, InstallDir: s.InstallDir,
-		Progress: progress.Options{Quiet: true, Observer: j.observe}}
+	var sidecar string
+	opts := pipeline.Options{Model: j.model, Output: j.requested, Render: j.render, Resume: j.resume, InstallDir: s.InstallDir,
+		Progress: progress.Options{Quiet: true, Observer: j.observe},
+		Saved: func(path, side string) {
+			sidecar = side
+			j.update(func() { j.output, j.sidecar = path, side })
+		}}
 	err := s.Transcribe(ctx, j.input, opts, io.Discard, s.Stderr)
 	var summary *jobSummary
-	if err == nil {
-		summary = summarize(j.sidecar)
+	if err == nil && sidecar != "" {
+		summary = summarize(sidecar)
 	}
 	j.update(func() {
 		j.finished = time.Now()
@@ -310,37 +323,42 @@ func transcribe(ctx context.Context, s *Server, c *call, raw json.RawMessage) (*
 	if _, local := setup.FindLocalModel(model); local && args.Resume {
 		return nil, argumentError("resume applies only to model meta; local runs are not checkpointed")
 	}
-	output := args.Output
-	if output == "" {
-		output = sidecarFor(input)
-		output = strings.TrimSuffix(output, ".transcript.json") + ".md"
-	} else if strings.HasSuffix(output, string(filepath.Separator)) {
-		return nil, argumentError("output must be a file, not a directory")
-	}
-	if output, err = s.roots.resolve(output, false); err != nil {
-		return nil, err
-	}
-	render, err := renderOptions(args.Format, args.Timestamps, output)
+	render, err := renderOptions(args.Format, args.Timestamps, args.Output)
 	if err != nil {
 		return nil, err
 	}
-	sidecar := sidecarFor(output)
-	if strings.HasSuffix(strings.ToLower(output), ".transcript.json") {
-		if render.Format != transcript.FormatJSON {
-			return nil, argumentError("an output named *.transcript.json must use format json")
-		}
-		sidecar = output
+	requested := args.Output
+	if requested == "" {
+		requested = output.DefaultPath(input, render.Format)
+	} else if strings.HasSuffix(requested, string(filepath.Separator)) {
+		return nil, argumentError("output must be a file, not a directory")
 	}
-	for _, path := range []string{output, sidecar} {
-		if _, err := os.Lstat(path); err == nil {
-			return nil, argumentError("%s already exists; call read_transcript to read it, or choose another output", path)
-		}
+	if requested, err = s.roots.resolve(requested, false); err != nil {
+		return nil, err
 	}
-	if existing, ok := s.jobs.active(output); ok {
+	if strings.HasSuffix(strings.ToLower(requested), ".transcript.json") && render.Format != transcript.FormatJSON {
+		return nil, argumentError("an output named *.transcript.json must use format json")
+	}
+	// Existing transcripts are kept: a taken name moves this run to a numbered one.
+	out, err := output.Available(requested)
+	if errors.Is(err, output.ErrNoFreeName) {
+		return nil, argumentError("%s and its numbered alternatives already exist; choose another output", requested)
+	} else if err != nil {
+		return nil, argumentError("cannot check output %s: %v", requested, err)
+	}
+	sidecar := sidecarFor(out)
+	if strings.HasSuffix(strings.ToLower(out), ".transcript.json") {
+		sidecar = out
+	}
+	var note string
+	if out != requested {
+		note = fmt.Sprintf("%s or its .transcript.json sidecar already exists, so this run writes %s (call read_transcript to read the existing transcript instead).", requested, out)
+	}
+	if existing, ok := s.jobs.active(out); ok {
 		view, _, _ := existing.snapshot()
-		return nil, argumentError("job %s is already transcribing to %s; call job_status", view.JobID, output)
+		return nil, argumentError("job %s is already transcribing to %s; call job_status", view.JobID, out)
 	}
-	j := &job{input: input, output: output, sidecar: sidecar, model: model, render: render, resume: args.Resume}
+	j := &job{input: input, requested: requested, output: out, sidecar: sidecar, note: note, model: model, render: render, resume: args.Resume}
 	s.jobs.start(j)
 	if s.Verbose {
 		s.log.Printf("job %s started with model %s", j.id, model)

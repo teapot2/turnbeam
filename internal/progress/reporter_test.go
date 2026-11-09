@@ -37,6 +37,25 @@ func TestMalformedEventsCannotWriteArbitraryStrings(t *testing.T) {
 	}
 }
 
+func TestSavedPathReports(t *testing.T) {
+	for _, tc := range []struct {
+		quiet          bool
+		path, conflict string
+		want           string
+	}{
+		{false, "/m/a.md", "", "Saved to /m/a.md.\n"},
+		{true, "/m/a.md", "", ""},
+		{true, "/m/a-2.md", "/m/a.transcript.json", "Saved to /m/a-2.md because a.transcript.json already exists.\n"},
+		{false, "/m/reunión\x1b[2J.md", "", "Saved to \"/m/reunión\\x1b[2J.md\".\n"},
+	} {
+		var stderr bytes.Buffer
+		r := New(&stderr, Options{Quiet: tc.quiet})
+		if err := r.Saved(tc.path, tc.conflict); err != nil || stderr.String() != tc.want {
+			t.Fatalf("Saved(%q, %q) quiet=%v: %q %v", tc.path, tc.conflict, tc.quiet, stderr.String(), err)
+		}
+	}
+}
+
 type failingWriter struct{ err error }
 
 func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }

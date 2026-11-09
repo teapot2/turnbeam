@@ -21,9 +21,14 @@ type outputOptions struct {
 	timestamps string
 }
 
-func (o *outputOptions) addFlags(cmd *cobra.Command) {
+// stdoutPath is the --output value that writes the transcript to stdout.
+const stdoutPath = "-"
+
+// addFlags registers the output flags; fallback describes where output goes
+// without --output.
+func (o *outputOptions) addFlags(cmd *cobra.Command, fallback string) {
 	cmd.Flags().StringVarP(&o.format, "format", "f", string(transcript.FormatMarkdown), "Output format: "+joinChoices(transcript.Formats))
-	cmd.Flags().StringVarP(&o.output, "output", "o", "", "Output file (default: stdout)")
+	cmd.Flags().StringVarP(&o.output, "output", "o", "", "Output file, or - for stdout (default: "+fallback+")")
 	cmd.Flags().StringVar(&o.timestamps, "timestamps", string(transcript.TimestampsStart), "Timestamp display: "+joinChoices(transcript.TimestampStyles))
 	completeChoices(cmd, "format", transcript.Formats)
 	completeChoices(cmd, "timestamps", transcript.TimestampStyles)
@@ -36,6 +41,18 @@ func completeChoices[T ~string](cmd *cobra.Command, flag string, values []T) {
 		names[i] = string(value)
 	}
 	cmd.RegisterFlagCompletionFunc(flag, cobra.FixedCompletions(names, cobra.ShellCompDirectiveNoFileComp))
+}
+
+// destination returns the path to write, "" for stdout, or fallback when
+// --output is not set.
+func (o outputOptions) destination(fallback string) string {
+	switch o.output {
+	case stdoutPath:
+		return ""
+	case "":
+		return fallback
+	}
+	return o.output
 }
 
 func (o outputOptions) render() transcript.RenderOptions {
@@ -73,7 +90,7 @@ type transcribeOptions struct {
 }
 
 func (o *transcribeOptions) addFlags(cmd *cobra.Command) {
-	o.outputOptions.addFlags(cmd)
+	o.outputOptions.addFlags(cmd, "next to the recording, with the format's extension")
 	cmd.Flags().StringVar(&o.model, "model", defaultModel(), "Transcription model `name`: meta (Meta Muse), or "+strings.Join(modelNames()[1:], " or ")+" on your Mac (see turnbeam models); "+modelEnv+" sets the default")
 	cmd.Flags().StringVar(&o.mode, "mode", "diarization", "Meta mode: diarization (best speaker labels), endpointing")
 	cmd.Flags().IntVar(&o.concurrency, "concurrency", meta.DefaultConcurrency, "Maximum concurrent Meta requests")

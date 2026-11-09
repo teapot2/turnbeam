@@ -191,14 +191,14 @@ var catalog = []tool{
 	{
 		Name: "transcribe",
 		Description: "Start transcribing a recording into a speaker-labeled transcript. Returns a job: when its state is not yet done, call job_status with the job_id. " +
-			"Writes the transcript next to the recording (or at output) plus a .transcript.json sidecar; existing files are never overwritten. " +
+			"Writes the transcript next to the recording (or at output) plus a .transcript.json sidecar. Existing files are never overwritten: when the name is taken, the run writes a numbered one such as meeting-2.md, and the job's output and transcript fields give the actual paths. " +
 			"Local models (parakeet, nemotron-3.5) run on this Mac; meta sends the audio to Meta's API and needs a key.",
 		InputSchema: map[string]any{
 			"type": "object", "additionalProperties": false, "required": []any{"path"},
 			"properties": map[string]any{
 				"path":         map[string]any{"type": "string", "description": "Absolute path (or ~/...) of the recording."},
 				"model":        enumSchema("Transcription model; the default is the server's configured default.", modelNames()),
-				"output":       map[string]any{"type": "string", "description": "Transcript file to write (default: the recording's name with .md next to it). Its extension picks the format."},
+				"output":       map[string]any{"type": "string", "description": "Transcript file to write (default: next to the recording, named after it with the format's extension: .md, .txt, .srt, .vtt, or .transcript.json for json). Its extension picks the format."},
 				"format":       enumSchema("Transcript format (default: from the output extension, else markdown).", transcript.Formats),
 				"timestamps":   enumSchema("Timestamp style for markdown and text (default start).", transcript.TimestampStyles),
 				"resume":       map[string]any{"type": "boolean", "description": "Meta only: continue an interrupted run from its checkpoints instead of paying again."},

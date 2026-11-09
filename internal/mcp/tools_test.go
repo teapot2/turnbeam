@@ -36,7 +36,7 @@ func TestTranscribeJobLifecycle(t *testing.T) {
 	if view.Summary == nil || *view.Summary != (jobSummary{Turns: 3, Speakers: 2, UnknownTurns: 1, DurationSeconds: 10}) {
 		t.Fatalf("summary: %+v", view.Summary)
 	}
-	if got.Model != "parakeet" || got.Output != view.Output || got.Render != (transcript.RenderOptions{Format: transcript.FormatMarkdown, Timestamps: transcript.TimestampsStart}) || !got.Progress.Quiet || got.Progress.Observer == nil || got.Resume {
+	if got.Model != "parakeet" || got.Output != view.Output || got.Saved == nil || got.Render != (transcript.RenderOptions{Format: transcript.FormatMarkdown, Timestamps: transcript.TimestampsStart}) || !got.Progress.Quiet || got.Progress.Observer == nil || got.Resume {
 		t.Fatalf("pipeline options: %+v", got)
 	}
 	for _, path := range []string{view.Output, view.Transcript} {
@@ -76,8 +76,15 @@ func TestTranscribeJobLifecycle(t *testing.T) {
 	if msg := c.failure("job_status", map[string]any{"job_id": "nope"}); !strings.Contains(msg, "unknown job_id") {
 		t.Fatal(msg)
 	}
-	if msg := c.failure("transcribe", map[string]any{"path": input}); !strings.Contains(msg, "already exists") || !strings.Contains(msg, "read_transcript") {
-		t.Fatal(msg)
+	// A re-run keeps the existing transcript and writes the next free name.
+	decode(t, c.call("transcribe", map[string]any{"path": input}, nil).StructuredContent, &view)
+	if view.State != stateDone || view.Output != filepath.Join(real, "meeting-2.md") || view.Transcript != filepath.Join(real, "meeting-2.transcript.json") || got.Output != filepath.Join(real, "meeting.md") {
+		t.Fatalf("re-run: %+v (pipeline output %s)", view, got.Output)
+	}
+	for _, path := range []string{view.Output, view.Transcript, filepath.Join(dir, "meeting.md"), filepath.Join(dir, "meeting.transcript.json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if msg := c.failure("transcribe", map[string]any{"path": input, "output": filepath.Join(dir, "other.transcript.json"), "format": "markdown"}); !strings.Contains(msg, "format json") {
 		t.Fatal(msg)
@@ -168,6 +175,39 @@ func TestJobsRunOneAtATime(t *testing.T) {
 		decode(t, c.call("job_status", map[string]any{"job_id": id, "wait_seconds": 10}, nil).StructuredContent, &view)
 		if view.State != stateDone {
 			t.Fatalf("job %s: %+v", id, view)
+		}
+	}
+}
+
+func TestTranscribeKeepsExistingTranscripts(t *testing.T) {
+	dir := t.TempDir()
+	real := realPath(t, dir)
+	writeFile(t, filepath.Join(dir, "meeting.wav"), []byte("riff"))
+	writeFile(t, filepath.Join(dir, "meeting.md"), []byte("keep"))
+	release := make(chan struct{})
+	started := make(chan string, 1)
+	c := serve(t, newServer(dir, gated(release, started)))
+	var view jobView
+	decode(t, c.call("transcribe", map[string]any{"path": filepath.Join(dir, "meeting.wav"), "wait_seconds": 0}, nil).StructuredContent, &view)
+	if view.Output != filepath.Join(real, "meeting-2.md") || view.Transcript != filepath.Join(real, "meeting-2.transcript.json") ||
+		!strings.Contains(view.Hint, "already exists") || !strings.Contains(view.Hint, "read_transcript") {
+		t.Fatalf("taken name not moved or not explained: %+v", view)
+	}
+	select {
+	case <-started:
+	case <-time.After(testTimeout):
+		t.Fatal("job never started")
+	}
+	// Another writer takes the predicted name while the job runs.
+	writeFile(t, filepath.Join(dir, "meeting-2.md"), []byte("other"))
+	close(release)
+	decode(t, c.call("job_status", map[string]any{"job_id": view.JobID, "wait_seconds": 10}, nil).StructuredContent, &view)
+	if view.State != stateDone || view.Output != filepath.Join(real, "meeting-3.md") || view.Transcript != filepath.Join(real, "meeting-3.transcript.json") || view.Summary == nil {
+		t.Fatalf("job did not report the name it published: %+v", view)
+	}
+	for name, want := range map[string]string{"meeting.md": "keep", "meeting-2.md": "other"} {
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(data) != want {
+			t.Fatal("existing file changed", name, err)
 		}
 	}
 }

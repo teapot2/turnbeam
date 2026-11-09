@@ -37,7 +37,7 @@ func TestErrorClassesDoNotPrintUntrustedCauses(t *testing.T) {
 		{errors.Join(output.ErrSource, filelock.ErrBusy), storage},
 		{&meta.Error{Kind: meta.ErrHTTP, StatusCode: 401, Code: secret, SessionID: secret}, remote},
 		{errors.Join(meta.ErrTransport, context.DeadlineExceeded), remote},
-		{media.ErrInvalidMedia, processing}, {output.ErrConflict, storage}, {output.ErrCommit, storage},
+		{media.ErrInvalidMedia, processing}, {output.ErrConflict, storage}, {output.ErrNoFreeName, storage}, {output.ErrCommit, storage},
 		{&os.PathError{Op: "open", Path: secret, Err: os.ErrPermission}, storage},
 		{errors.New(secret), processing},
 	} {

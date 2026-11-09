@@ -272,7 +272,13 @@ func publishing(onCall func(pipeline.Options)) func(context.Context, string, pip
 			return err
 		}
 		defer d.Close()
-		return d.Write(ctx, sampleTranscript())
+		if err := d.Write(ctx, sampleTranscript()); err != nil {
+			return err
+		}
+		if opts.Saved != nil && d.Path() != "" {
+			opts.Saved(d.Path(), d.Sidecar())
+		}
+		return nil
 	}
 }
 

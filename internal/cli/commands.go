@@ -75,10 +75,10 @@ func addCommands(root *cobra.Command, version string, code *int, stdout io.Write
 		PreRunE:           func(cmd *cobra.Command, _ []string) error { return opts.validate(cmd) },
 		RunE: func(cmd *cobra.Command, args []string) error {
 			*code = exitFailed
-			return output.Export(cmd.Context(), args[0], opts.output, opts.render(), stdout)
+			return output.Export(cmd.Context(), args[0], opts.destination(""), opts.render(), stdout)
 		},
 	}
-	opts.addFlags(export)
+	opts.addFlags(export, "stdout")
 	root.AddCommand(export)
 }
 

@@ -58,6 +58,9 @@ func TestOfflineCommandsNeverDispatchInference(t *testing.T) {
 	if err != nil || stderr != "" || stdout != "[00:00:00.100 - 00:00:00.500] Alice=A: Hello.\n" {
 		t.Fatal("offline export mixed output", err, stdout, stderr)
 	}
+	if again, _, err, _ := invoke("export", path, "-o", "-", "--format", "text", "--timestamps", "range"); err != nil || again != stdout {
+		t.Fatal("-o - did not export to stdout", err, again)
+	}
 	output := filepath.Join(dir, "meeting.md")
 	stdout, stderr, err, _ = invoke("export", path, "--output", output, "--timestamps", "none")
 	if err != nil || stdout != "" || stderr != "" {

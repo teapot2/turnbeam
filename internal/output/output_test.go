@@ -9,12 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/teapot2/turnbeam/internal/filelock"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
@@ -89,22 +89,37 @@ func TestStdoutAndPairedFiles(t *testing.T) {
 	}
 }
 
-func TestNamesConflictsAndSingleCanonicalJSON(t *testing.T) {
-	for _, name := range []string{"meeting", "meeting.md", "meeting.txt", "meeting.json", ".meeting", "meeting.v1.md", "meeting.transcript.json"} {
+func TestNamesNumberingAndSingleCanonicalJSON(t *testing.T) {
+	for name, numbered := range map[string]string{"meeting": "meeting-2", "meeting.md": "meeting-2.md", "meeting.txt": "meeting-2.txt", "meeting.json": "meeting-2.json",
+		".meeting": ".meeting-2", "meeting.v1.md": "meeting.v1-2.md", "meeting.transcript.json": "meeting-2.transcript.json", "Meeting.Transcript.JSON": "Meeting-2.Transcript.JSON"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			d := open(t, filepath.Join(dir, name), transcript.RenderOptions{Format: "json"}, nil)
+			path := filepath.Join(dir, name)
+			d := open(t, path, transcript.RenderOptions{Format: "json"}, nil)
 			if err := d.Write(context.Background(), sample()); err != nil {
 				t.Fatal(err)
 			}
 			d.Close()
 			count := 2
-			if name == "meeting.transcript.json" {
+			if strings.HasSuffix(strings.ToLower(name), ".transcript.json") {
 				count = 1
 			}
 			files(t, dir, count)
-			if _, err := Open(context.Background(), filepath.Join(dir, name), transcript.RenderOptions{Format: "json"}, nil); !errors.Is(err, ErrConflict) {
-				t.Fatal("existing output was not protected")
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d = open(t, path, transcript.RenderOptions{Format: "json"}, nil)
+			if d.Path() != filepath.Join(dir, numbered) || d.Sidecar() != filepath.Join(dir, sidecarName(numbered)) || d.Conflict() != path {
+				t.Fatal("taken name not numbered", d.Path(), d.Sidecar())
+			}
+			if err := d.Write(context.Background(), sample()); err != nil {
+				t.Fatal(err)
+			}
+			d.Close()
+			files(t, dir, 2*count)
+			if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, first) {
+				t.Fatal("existing output changed", err)
 			}
 		})
 	}
@@ -124,10 +139,20 @@ func TestNamesConflictsAndSingleCanonicalJSON(t *testing.T) {
 			default:
 				os.WriteFile(path, []byte("keep"), 0600)
 			}
-			if _, err := Open(context.Background(), filepath.Join(dir, "meeting.md"), transcript.RenderOptions{}, nil); !errors.Is(err, ErrConflict) {
-				t.Fatal("conflict accepted", err)
+			d := open(t, filepath.Join(dir, "meeting.md"), transcript.RenderOptions{}, nil)
+			if d.Path() != filepath.Join(dir, "meeting-2.md") || d.Conflict() != path {
+				t.Fatal("conflict not moved to a numbered name", d.Path(), d.Conflict())
 			}
-			files(t, dir, 1)
+			if err := d.Write(context.Background(), sample()); err != nil {
+				t.Fatal(err)
+			}
+			d.Close()
+			files(t, dir, 3)
+			if kind == "main" || kind == "sidecar" {
+				if data, err := os.ReadFile(path); err != nil || string(data) != "keep" {
+					t.Fatal("conflicting file changed", err)
+				}
+			}
 		})
 	}
 	for _, path := range []string{" ", filepath.Join(t.TempDir(), "missing", "out.md"), filepath.Join(t.TempDir(), "out.transcript.json")} {
@@ -200,23 +225,31 @@ func TestRacingDestinationAndRollbackFailurePreserveOthers(t *testing.T) {
 	dir := t.TempDir()
 	d := open(t, filepath.Join(dir, "out.md"), transcript.RenderOptions{}, nil)
 	link := d.link
+	raced := false
 	d.link = func(from, to string) error {
-		if to == d.main {
+		if to == d.main && !raced {
+			raced = true
 			if err := os.WriteFile(filepath.Join(dir, to), []byte("other writer"), 0600); err != nil {
 				return err
 			}
 		}
 		return link(from, to)
 	}
-	if err := d.Write(context.Background(), sample()); !errors.Is(err, ErrConflict) {
-		t.Fatal("racing file overwritten", err)
+	if err := d.Write(context.Background(), sample()); err != nil {
+		t.Fatal("racing name was not moved", err)
+	}
+	if d.Path() != filepath.Join(dir, "out-2.md") || d.Sidecar() != filepath.Join(dir, "out-2.transcript.json") {
+		t.Fatal("published under the wrong name", d.Path())
 	}
 	d.Close()
 	data, _ := os.ReadFile(filepath.Join(dir, "out.md"))
 	if string(data) != "other writer" {
 		t.Fatal("racing writer data lost")
 	}
-	files(t, dir, 1)
+	if _, err := os.Stat(filepath.Join(dir, "out.transcript.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("sidecar of the abandoned name was left behind", err)
+	}
+	files(t, dir, 3)
 	otherDir := t.TempDir()
 	d = open(t, filepath.Join(otherDir, "out.md"), transcript.RenderOptions{}, nil)
 	want := errors.New("storage failure")
@@ -242,7 +275,7 @@ func TestRacingDestinationAndRollbackFailurePreserveOthers(t *testing.T) {
 	}
 }
 
-func TestConcurrentNoClobberWriters(t *testing.T) {
+func TestConcurrentWritersGetDistinctNames(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "out.md")
 	a, b := open(t, path, transcript.RenderOptions{}, nil), open(t, path, transcript.RenderOptions{}, nil)
@@ -253,18 +286,40 @@ func TestConcurrentNoClobberWriters(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
-	success := 0
 	for err := range errs {
-		if err == nil {
-			success++
-		} else if !errors.Is(err, ErrConflict) && !errors.Is(err, filelock.ErrBusy) {
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if success != 1 {
-		t.Fatal("no-replace publication had multiple winners")
+	got := []string{a.Path(), b.Path()}
+	slices.Sort(got)
+	if !slices.Equal(got, []string{filepath.Join(dir, "out-2.md"), path}) {
+		t.Fatal("writers did not get distinct names", got)
 	}
-	files(t, dir, 2)
+	files(t, dir, 4)
+}
+
+func TestNumberedNamesAreBounded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.md")
+	os.WriteFile(path, nil, 0600)
+	os.WriteFile(filepath.Join(dir, "out-2.transcript.json"), nil, 0600)
+	if got, err := Available(path); err != nil || got != filepath.Join(dir, "out-3.md") {
+		t.Fatal("available name skipped a taken sidecar", got, err)
+	}
+	if got, err := Available(filepath.Join(dir, "free.md")); err != nil || got != filepath.Join(dir, "free.md") {
+		t.Fatal("free name was numbered", got, err)
+	}
+	for n := 3; n <= maxNumbered; n++ {
+		os.WriteFile(filepath.Join(dir, numberedName("out.md", n)), nil, 0600)
+	}
+	if _, err := Available(path); !errors.Is(err, ErrNoFreeName) {
+		t.Fatal("exhausted names accepted", err)
+	}
+	if d, err := Open(context.Background(), path, transcript.RenderOptions{}, nil); d != nil || !errors.Is(err, ErrNoFreeName) {
+		t.Fatal("exhausted names opened", err)
+	}
+	files(t, dir, maxNumbered)
 }
 
 func TestRollbackNeverRemovesReplacedSidecar(t *testing.T) {
@@ -358,7 +413,8 @@ func TestProcessInterruptionLeavesNoPrimaryOutput(t *testing.T) {
 	if _, err := transcript.Decode(data); err != nil {
 		t.Fatal("orphan was a partial JSON file")
 	}
-	if d, err := Open(context.Background(), filepath.Join(dir, "out.md"), transcript.RenderOptions{}, nil); d != nil || !errors.Is(err, ErrConflict) {
-		t.Fatal("orphan silently replaced")
+	d := open(t, filepath.Join(dir, "out.md"), transcript.RenderOptions{}, nil)
+	if d.Path() != filepath.Join(dir, "out-2.md") {
+		t.Fatal("orphan silently replaced", d.Path())
 	}
 }

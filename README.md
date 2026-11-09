@@ -63,7 +63,7 @@ Transcribe on your Mac, with no account:
 
 ```sh
 turnbeam setup --model parakeet                             # speaker model (~114 MB) + Parakeet (714 MB)
-turnbeam meeting.mp4 --output meeting.md --model parakeet
+turnbeam meeting.mp4 --model parakeet                       # writes meeting.md next to meeting.mp4
 ```
 
 Or with Meta Muse, the default:
@@ -71,7 +71,7 @@ Or with Meta Muse, the default:
 ```sh
 turnbeam setup                                              # speaker model (~114 MB)
 turnbeam key set                                            # save your Meta API key in the Keychain
-turnbeam meeting.mp4 --output meeting.md
+turnbeam meeting.mp4
 ```
 
 `turnbeam doctor` checks that everything is installed, offline. If `setup` is
@@ -90,15 +90,20 @@ variable takes precedence over the Keychain.
 [00:00:07.300] **Unknown speaker:** Sorry, can everyone hear me?
 ```
 
-- `--format` picks `markdown`, `text`, `json`, or `srt`/`vtt` subtitles.
-  Without it, the output file's extension decides, so `-o meeting.srt` writes
-  subtitles.
+- The transcript is saved next to the recording (`meeting.md` for
+  `meeting.mp4`) unless `--output` names another file. `--output -` prints it
+  to stdout instead and saves nothing; progress always goes to stderr.
+- `--format` picks `markdown`, `text`, `json`, or `srt`/`vtt` subtitles, and
+  the default file gets that extension. With `--output`, the file's extension
+  decides when `--format` is not given, so `-o meeting.srt` writes subtitles.
 - `--timestamps` shows each turn's `start` (the default), its `range`, or
   `none`.
-- With `--output`, Turnbeam also writes a JSON sidecar
-  (`meeting.transcript.json`) with exact timings and speaker IDs; renaming and
-  re-exporting work from it. Without `--output`, the transcript goes to stdout
-  and progress to stderr.
+- Every saved transcript comes with a JSON sidecar (`meeting.transcript.json`)
+  holding exact timings and speaker IDs; renaming and re-exporting work from
+  it. Existing files are never overwritten: if `meeting.md` or its sidecar
+  already exists, the transcript is saved as `meeting-2.md` (then `-3`, …), and
+  Turnbeam prints where it saved it. For another format of a finished
+  transcript, export it from the sidecar instead of transcribing again.
 - Keep the default `--mode diarization`. `--mode endpointing` splits turns at
   pauses regardless of who is talking, so far fewer of them get a speaker.
 
@@ -140,7 +145,7 @@ Nemotron 3.5 reports words about 0.4 s late, so Turnbeam moves its word times
 ## Resume, rename and export
 
 ```sh
-turnbeam meeting.mp4 --output meeting.md --resume
+turnbeam meeting.mp4 --resume
 turnbeam speakers rename meeting.transcript.json --speaker 1=Alice --speaker 2=Bob
 turnbeam export meeting.transcript.json --output meeting-named.md
 ```

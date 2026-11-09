@@ -18,7 +18,7 @@ import (
 	"github.com/teapot2/turnbeam/internal/jobs"
 	"github.com/teapot2/turnbeam/internal/media"
 	"github.com/teapot2/turnbeam/internal/meta"
-	"github.com/teapot2/turnbeam/internal/output"
+	"github.com/teapot2/turnbeam/internal/progress"
 	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
@@ -157,11 +157,35 @@ func TestFullPipelineStdoutFileAndOfflineResume(t *testing.T) {
 	if f.calls != 1 || f.media.prepare != 1 || f.auth.calls != 1 {
 		t.Fatal("resume repeated expensive work")
 	}
-	if err := f.runner.Run(ctx, f.input, Options{Resume: true, Output: path}, io.Discard, io.Discard); !errors.Is(err, output.ErrConflict) {
-		t.Fatal("existing output not protected", err)
+	if !strings.Contains(stderr.String(), "Saved to "+path+".\n") {
+		t.Fatal("saved path not reported", stderr.String())
+	}
+	// A re-run keeps the existing pair and publishes under the next free name,
+	// reporting it even in quiet mode.
+	stderr.Reset()
+	var saved, savedSidecar string
+	opts := Options{Resume: true, Output: path, Render: transcript.RenderOptions{Timestamps: "none"}, Progress: progress.Options{Quiet: true},
+		Saved: func(path, sidecar string) { saved, savedSidecar = path, sidecar }}
+	if err := f.runner.Run(ctx, f.input, opts, io.Discard, &stderr); err != nil {
+		t.Fatal("re-run with an existing output failed", err)
+	}
+	renamed := filepath.Join(outDir, "meeting-2.md")
+	if saved != renamed || savedSidecar != filepath.Join(outDir, "meeting-2.transcript.json") {
+		t.Fatal("saved paths not reported to the caller", saved, savedSidecar)
+	}
+	if stderr.String() != "Saved to "+renamed+" because meeting.md already exists.\n" {
+		t.Fatalf("renamed output not reported in quiet mode: %q", stderr.String())
+	}
+	for _, name := range []string{path, renamed} {
+		if data, err := os.ReadFile(name); err != nil || string(data) != "**Speaker 1:** Hello.\n" {
+			t.Fatal("existing or renamed output changed", name, err)
+		}
+	}
+	if _, err := os.Stat(savedSidecar); err != nil {
+		t.Fatal(err)
 	}
 	if f.calls != 1 {
-		t.Fatal("conflict caused a paid request")
+		t.Fatal("re-run caused a paid request")
 	}
 }
 

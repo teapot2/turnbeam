@@ -21,10 +21,13 @@ import (
 
 var (
 	ErrConflict = errors.New("output or canonical sidecar already exists; choose another output name")
-	ErrPath     = errors.New("invalid output destination")
-	ErrState    = errors.New("output destination is closed or already written")
-	ErrCleanup  = errors.New("output rollback incomplete; inspect the destination before retrying")
-	ErrStorage  = errors.New("output storage failed; check permissions, space and filesystem support")
+	// ErrNoFreeName means every numbered alternative to a taken transcript name
+	// is taken too.
+	ErrNoFreeName = errors.New("output name and its numbered alternatives already exist; choose another output name")
+	ErrPath       = errors.New("invalid output destination")
+	ErrState      = errors.New("output destination is closed or already written")
+	ErrCleanup    = errors.New("output rollback incomplete; inspect the destination before retrying")
+	ErrStorage    = errors.New("output storage failed; check permissions, space and filesystem support")
 	// ErrPublishLocked means another command kept the output directory locked
 	// after transcription finished; the completed job can be published again.
 	ErrPublishLocked = errors.New("output directory is locked by another turnbeam command; rerun with --resume to publish without repeating transcription")
@@ -33,28 +36,140 @@ var (
 // publishLockWait covers a concurrent rename or export, which hold the lock briefly.
 var publishLockWait = 5 * time.Second
 
+// maxNumbered bounds the numbered names tried for a taken transcript name.
+const maxNumbered = 999
+
 // Destination owns private staging until Close. Use it for one invocation only;
 // methods are not concurrent. Preflight checks happen before expensive inference.
 type Destination struct {
 	root                 *os.Root
+	dir, requested       string
+	conflict             string
 	stage, main, sidecar string
-	stdout               io.Writer
-	opts                 transcript.RenderOptions
-	closed, written      bool
-	source               *source
-	reuseSidecar         bool
-	link                 func(string, string) error
-	sync                 func() error
-	remove               func(string) error
-	stageFile            func(context.Context, string, []byte) (os.FileInfo, error)
+	// numbered moves a taken name to name-2, name-3, …; number is the current one.
+	numbered        bool
+	number          int
+	stdout          io.Writer
+	opts            transcript.RenderOptions
+	closed, written bool
+	source          *source
+	reuseSidecar    bool
+	link            func(string, string) error
+	sync            func() error
+	remove          func(string) error
+	stageFile       func(context.Context, string, []byte) (os.FileInfo, error)
 }
 
 // Open selects stdout for an empty path. File output requires an existing parent
 // and hard-link support for atomic no-replace publication; unsupported volumes
-// fail before inference. A canonical JSON destination is written only once.
+// fail before inference. Existing files are never replaced: when the path or its
+// sidecar is taken, before or during the run, the transcript is published under
+// the first free numbered name (meeting-2.md with meeting-2.transcript.json).
 func Open(ctx context.Context, path string, opts transcript.RenderOptions, stdout io.Writer) (*Destination, error) {
 	d, err := openDestination(ctx, path, opts, stdout, nil)
 	return d, storageError(err)
+}
+
+// Path returns the transcript file's absolute path, or "" for stdout. It can
+// change until Write succeeds.
+func (d *Destination) Path() string {
+	if d.root == nil {
+		return ""
+	}
+	return filepath.Join(d.dir, d.main)
+}
+
+// Sidecar returns the canonical JSON sidecar's absolute path, or "" for stdout.
+func (d *Destination) Sidecar() string {
+	if d.root == nil {
+		return ""
+	}
+	return filepath.Join(d.dir, d.sidecar)
+}
+
+// Conflict returns the absolute path of the existing file, the requested
+// transcript or its sidecar, that moved the output to a numbered name; it is ""
+// when the requested name was used.
+func (d *Destination) Conflict() string {
+	if d.root == nil || d.conflict == "" {
+		return ""
+	}
+	return filepath.Join(d.dir, d.conflict)
+}
+
+// DefaultPath names a recording's transcript next to it: meeting.mp4 becomes
+// meeting.md, or meeting.txt, .srt or .vtt for those formats. JSON is the
+// canonical meeting.transcript.json, which is its own sidecar.
+func DefaultPath(recording string, format transcript.Format) string {
+	ext := ".md"
+	switch format {
+	case transcript.FormatText:
+		ext = ".txt"
+	case transcript.FormatJSON:
+		ext = ".transcript.json"
+	case transcript.FormatSRT:
+		ext = ".srt"
+	case transcript.FormatVTT:
+		ext = ".vtt"
+	}
+	base := filepath.Base(recording)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if stem == "" {
+		stem = base
+	}
+	return filepath.Join(filepath.Dir(recording), stem+ext)
+}
+
+// Available returns path when neither it nor its sidecar exists, otherwise the
+// first free numbered name Open would choose now.
+func Available(path string) (string, error) {
+	dir, main := filepath.Split(path)
+	for n := 1; n <= maxNumbered; n++ {
+		name := numberedName(main, n)
+		taken := false
+		for _, candidate := range []string{name, sidecarName(name)} {
+			if _, err := os.Lstat(filepath.Join(dir, candidate)); err == nil {
+				taken = true
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return "", err
+			}
+		}
+		if !taken {
+			return filepath.Join(dir, name), nil
+		}
+	}
+	return "", ErrNoFreeName
+}
+
+// numberedName inserts -n before the extension; n == 1 is the name itself.
+// The canonical .transcript.json suffix stays whole.
+func numberedName(name string, n int) string {
+	if n == 1 {
+		return name
+	}
+	base, ext := name, filepath.Ext(name)
+	if strings.HasSuffix(strings.ToLower(name), ".transcript.json") {
+		ext = name[len(name)-len(".transcript.json"):]
+	}
+	if ext != name {
+		base = strings.TrimSuffix(name, ext)
+	} else {
+		ext = ""
+	}
+	return fmt.Sprintf("%s-%d%s", base, n, ext)
+}
+
+// sidecarName names the canonical JSON beside a transcript file; a canonical
+// name is its own sidecar.
+func sidecarName(main string) string {
+	if strings.HasSuffix(strings.ToLower(main), ".transcript.json") {
+		return main
+	}
+	stem := strings.TrimSuffix(main, filepath.Ext(main))
+	if stem == "" {
+		stem = main
+	}
+	return stem + ".transcript.json"
 }
 
 func storageError(err error) error {
@@ -89,18 +204,13 @@ func openDestination(ctx context.Context, path string, opts transcript.RenderOpt
 	if d.main == "." || d.main == ".." || d.main == string(os.PathSeparator) {
 		return nil, ErrPath
 	}
-	stem := strings.TrimSuffix(d.main, filepath.Ext(d.main))
-	if stem == "" {
-		stem = d.main
+	d.sidecar = sidecarName(d.main)
+	if d.sidecar == d.main && opts.Format != transcript.FormatJSON {
+		return nil, fmt.Errorf("%w: canonical sidecar name requires JSON format", ErrPath)
 	}
-	d.sidecar = stem + ".transcript.json"
-	if strings.HasSuffix(strings.ToLower(d.main), ".transcript.json") {
-		if opts.Format != transcript.FormatJSON {
-			return nil, fmt.Errorf("%w: canonical sidecar name requires JSON format", ErrPath)
-		}
-		d.sidecar = d.main
-	}
-	d.root, err = os.OpenRoot(filepath.Dir(abs))
+	// Only new transcripts are numbered; an export names an exact file.
+	d.dir, d.requested, d.numbered, d.number = filepath.Dir(abs), d.main, input == nil, 1
+	d.root, err = os.OpenRoot(d.dir)
 	if err != nil {
 		return nil, fmt.Errorf("open output directory: %w", err)
 	}
@@ -109,17 +219,16 @@ func openDestination(ctx context.Context, path string, opts transcript.RenderOpt
 			err = errors.Join(err, d.Close())
 		}
 	}()
-	d.reuseSidecar = input != nil && d.main != d.sidecar && input.isPath(filepath.Join(filepath.Dir(abs), d.sidecar))
-	for _, name := range []string{d.main, d.sidecar} {
-		if name == d.sidecar && d.reuseSidecar {
-			if err := input.check(ctx); err != nil {
-				return nil, err
-			}
-			continue
+	d.reuseSidecar = input != nil && d.main != d.sidecar && input.isPath(filepath.Join(d.dir, d.sidecar))
+	if d.reuseSidecar {
+		if err := input.check(ctx); err != nil {
+			return nil, err
 		}
-		if _, err := d.root.Lstat(name); err == nil {
-			return nil, ErrConflict
-		} else if !errors.Is(err, os.ErrNotExist) {
+	}
+	if taken, err := d.taken(); err != nil {
+		return nil, err
+	} else if taken != "" {
+		if err := d.next(); err != nil {
 			return nil, err
 		}
 	}
@@ -151,6 +260,45 @@ func newStage(root *os.Root) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+// taken returns the current transcript or sidecar name if it exists.
+func (d *Destination) taken() (string, error) {
+	for _, name := range []string{d.main, d.sidecar} {
+		if name == d.sidecar && d.reuseSidecar {
+			continue
+		}
+		if _, err := d.root.Lstat(name); err == nil {
+			return name, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return "", nil
+}
+
+// next moves a numbered destination from its taken name to the next free one,
+// remembering which existing file moved it off the requested name.
+func (d *Destination) next() error {
+	if !d.numbered {
+		return ErrConflict
+	}
+	if d.number == 1 {
+		name, err := d.taken()
+		if err != nil {
+			return err
+		}
+		d.conflict = name
+	}
+	for d.number < maxNumbered {
+		d.number++
+		d.main = numberedName(d.requested, d.number)
+		d.sidecar = sidecarName(d.main)
+		if taken, err := d.taken(); err != nil || taken == "" {
+			return err
+		}
+	}
+	return ErrNoFreeName
 }
 
 func (d *Destination) writeStage(ctx context.Context, name string, data []byte) (os.FileInfo, error) {
@@ -226,6 +374,22 @@ func (d *Destination) Write(ctx context.Context, input *transcript.Transcript) (
 			return fmt.Errorf("sync source sidecar: %w", err)
 		}
 	}
+	// A name taken while staging moves a numbered destination to the next free
+	// one; the staged files are linked again under that name.
+	for {
+		err = d.publish(ctx, mainInfo, sideInfo)
+		if !errors.Is(err, ErrConflict) || errors.Is(err, ErrCleanup) || !d.numbered {
+			return err
+		}
+		if err = d.next(); err != nil {
+			return err
+		}
+	}
+}
+
+// publish links the staged pair under the current names, sidecar first, and
+// rolls back owned, unchanged files main-first on error.
+func (d *Destination) publish(ctx context.Context, mainInfo, sideInfo os.FileInfo) (err error) {
 	mainPublished, sidePublished := false, false
 	defer func() {
 		if err == nil {

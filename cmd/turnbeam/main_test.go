@@ -179,14 +179,31 @@ func testCachedOutputs(t *testing.T, ctx context.Context, binary string) {
 		err := cmd.Run()
 		return stdout.String(), stderr.String(), err
 	}
-	stdout, stderr, err := invoke()
-	if err != nil || stdout != "[00:00:00.200] **Speaker 1:** Hello.\n" || strings.Contains(stderr, "Preparing audio") || strings.Contains(stderr, "Transcribing with") {
+	stdout, stderr, err := invoke("--output", "-")
+	if err != nil || stdout != "[00:00:00.200] **Speaker 1:** Hello.\n" || strings.Contains(stderr, "Preparing audio") || strings.Contains(stderr, "Transcribing with") || strings.Contains(stderr, "Saved to") {
 		t.Fatal("cached CLI required tools/credentials or contaminated stdout", err, stdout, stderr)
+	}
+	// Without --output, the transcript and its sidecar go next to the recording.
+	beside := strings.TrimSuffix(input, filepath.Ext(input))
+	stdout, stderr, err = invoke("--timestamps=none")
+	if err != nil || stdout != "" || !strings.Contains(stderr, "Saved to "+beside+".md.\n") {
+		t.Fatal("default output not saved next to the recording", err, stdout, stderr)
+	}
+	for _, path := range []string{beside + ".md", beside + ".transcript.json"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Each run writes its own sidecar, so a second format of the same recording
+	// is numbered rather than sharing the first run's sidecar.
+	stdout, stderr, err = invoke("--format=srt")
+	if err != nil || stdout != "" || !strings.Contains(stderr, "Saved to "+beside+"-2.srt because "+filepath.Base(beside)+".transcript.json already exists.\n") {
+		t.Fatal("default output ignored the format or misreported the conflict", err, stdout, stderr)
 	}
 	outDir := t.TempDir()
 	output := filepath.Join(outDir, "meeting.md")
 	stdout, stderr, err = invoke("--output", output, "--timestamps=none")
-	if err != nil || stdout != "" {
+	if err != nil || stdout != "" || !strings.Contains(stderr, "Saved to "+output+".\n") {
 		t.Fatal("file invocation failed", err, stdout, stderr)
 	}
 	data, err := os.ReadFile(output)
@@ -202,8 +219,12 @@ func testCachedOutputs(t *testing.T, ctx context.Context, binary string) {
 		t.Fatal("sidecar altered canonical timing", err)
 	}
 	stdout, stderr, err = invoke("--output", output)
-	if err == nil || stdout != "" || !strings.Contains(stderr, "already exists") {
-		t.Fatal("conflicting files overwritten")
+	renamed := filepath.Join(outDir, "meeting-2.md")
+	if err != nil || stdout != "" || !strings.Contains(stderr, "Saved to "+renamed+" because meeting.md already exists.\n") {
+		t.Fatal("taken name not moved to a numbered one", err, stdout, stderr)
+	}
+	if data, err := os.ReadFile(output); err != nil || string(data) != "**Speaker 1:** Hello.\n" {
+		t.Fatal("conflicting files overwritten", err)
 	}
 	single := filepath.Join(outDir, "single.transcript.json")
 	stdout, stderr, err = invoke("--format=json", "--output", single, "--timestamps=none")
@@ -211,7 +232,7 @@ func testCachedOutputs(t *testing.T, ctx context.Context, binary string) {
 		t.Fatal("single canonical JSON output failed", err, stderr)
 	}
 	entries, err := os.ReadDir(outDir)
-	if err != nil || len(entries) != 3 {
+	if err != nil || len(entries) != 5 {
 		t.Fatal("temporary or redundant JSON output survived", err)
 	}
 }
