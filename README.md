@@ -21,7 +21,7 @@
 Turnbeam turns a meeting recording into a transcript that says who spoke when.
 Turns it can't attribute reliably are labeled **Unknown speaker** instead of
 guessed. Speakers are always identified on your Mac. Transcription runs on
-your Mac too with a local model, or through Meta Muse by default.
+your Mac too with a local model, or through Meta Muse.
 
 > [!NOTE]
 > Turnbeam is experimental. The CLI and the transcript JSON schema may change.
@@ -30,8 +30,8 @@ your Mac too with a local model, or through Meta Muse by default.
 
 - A Mac with Apple Silicon.
 - `ffmpeg` and `ffprobe` on your `PATH`.
-- For the default Meta Muse model: a Meta API key, and permission to send the
-  recording to Meta. Local models need neither.
+- For Meta Muse: a Meta API key, and permission to send the recording to
+  Meta. Local models need neither.
 
 ## Install
 
@@ -63,10 +63,10 @@ Transcribe on your Mac, with no account:
 
 ```sh
 turnbeam setup --model parakeet                             # speaker model (~114 MB) + Parakeet (714 MB)
-turnbeam meeting.mp4 --model parakeet                       # writes meeting.md next to meeting.mp4
+turnbeam meeting.mp4                                        # writes meeting.md next to meeting.mp4
 ```
 
-Or with Meta Muse, the default:
+Or with Meta Muse:
 
 ```sh
 turnbeam setup                                              # speaker model (~114 MB)
@@ -76,9 +76,8 @@ turnbeam meeting.mp4
 
 `turnbeam doctor` checks that everything is installed, offline. If `setup` is
 interrupted, run it again and it resumes where it stopped. Any file with an
-audio track that FFmpeg can decode works as input. `TURNBEAM_MODEL=parakeet`
-makes a local model the default, and a nonempty `META_API_KEY` environment
-variable takes precedence over the Keychain.
+audio track that FFmpeg can decode works as input. A nonempty `META_API_KEY`
+environment variable takes precedence over the Keychain.
 
 ## Output
 
@@ -113,21 +112,49 @@ variable takes precedence over the Keychain.
 
 | Model | Runs | Languages | Word errors | Right speaker | Wrong speaker |
 | --- | --- | --- | --- | --- | --- |
-| `meta` (default) | Meta API | see Meta's documentation | 27% | 65% | 1.9% |
+| `meta` | Meta API | see Meta's documentation | 27% | 65% | 1.9% |
 | `parakeet` | on your Mac, under 1 min for 21 min of audio | 25 European | 26% | 76% | 1.5% |
 | `nemotron-3.5` | on your Mac, about 2 min | multilingual, incl. Chinese, Japanese, Hindi, Arabic | 30% | 75% | 1.5% |
+| `nemotron-en` | on your Mac, about 2 min | English | 24% | – | – |
+| `parakeet-ctc` | on your Mac, about 9 min | English, without punctuation or capitals | 34% | – | – |
+| `apple` | on your Mac, about 10 s | many, one per run with `--language` | 32% | – | – |
 
 Accuracy was measured on a 21-minute AMI meeting against human word-level
 annotations: the share of words transcribed wrongly, and the share placed with
-the right or with a wrong speaker.
+the right or with a wrong speaker. The two English models were added later and
+scored with a script that counts only words matching the human transcript; on
+it, `nemotron-en` placed 90% of words with the right speaker, `parakeet-ctc`
+92% and `apple` 88%, against 85% for `parakeet` and 91% for `nemotron-3.5`,
+each with at most 0.2% placed wrongly.
 
 `turnbeam models` lists the models and whether they are installed;
-`setup --model NAME` adds one (714 MB for Parakeet, 742 MB for Nemotron 3.5),
-and several can be installed side by side. Local models upload nothing, need no
+`setup --model NAME` adds one (714 MB for Parakeet, 742 MB for Nemotron 3.5,
+700 MB for Nemotron EN, 1.2 GB for Parakeet CTC), and several can be installed
+side by side. Local models upload nothing, need no
 key and cost nothing. They transcribe the whole recording in one pass, so
 `--resume`, `--fresh`, `--mode` and `--concurrency` apply only to `meta`.
-Nemotron 3.5 reports words about 0.4 s late, so Turnbeam moves its word times
-300 ms earlier.
+Nemotron 3.5 and Nemotron EN report words about 0.4 s late, so Turnbeam moves
+their word times 300 ms and 250 ms earlier.
+
+Without `--model`, Turnbeam uses `TURNBEAM_MODEL` if set, else the model you
+saved with `turnbeam models default NAME`, else the first installed local model
+in the order `turnbeam models` lists them, else `meta`. `turnbeam models
+default` prints the current default and why; `turnbeam models default auto`
+removes the saved one.
+
+`apple` is the transcriber built into macOS 26 and later. It needs the Xcode
+Command Line Tools (`xcode-select --install`): `turnbeam setup --model apple`
+builds a small Swift helper from source bundled in Turnbeam and asks macOS for
+Apple's speech model in your Mac's language, or in another with
+`--language es-MX`. macOS downloads and keeps that model itself, so Turnbeam
+shows no size for it. Apple's transcriber does not detect the language, so pass
+`--language` when a recording is not in your Mac's language; run setup once
+for each language you use.
+
+`--model` also takes a `.gguf` file of your own, such as a NeMo checkpoint you
+converted with NeMo-Speech.cpp's `convert_model.py`. Turnbeam runs it on the
+same pinned runtime, warns that it is unpinned, uses its word times as
+reported, and records the file's SHA-256 in the transcript.
 
 ## How it works
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/chunking"
 	"github.com/teapot2/turnbeam/internal/credentials"
@@ -20,6 +21,7 @@ import (
 	"github.com/teapot2/turnbeam/internal/meta"
 	"github.com/teapot2/turnbeam/internal/output"
 	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/settings"
 	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/subprocess"
 	"github.com/teapot2/turnbeam/internal/transcript"
@@ -60,13 +62,18 @@ func classify(err error) (errorClass, string) {
 	if model := (*setup.ModelError)(nil); !errors.Is(err, setup.ErrDoctorFailed) && errors.As(err, &model) {
 		return dependency, model.Error()
 	}
+	// The message names only the setup command and the language tag given.
+	if missing := (*apple.SetupError)(nil); errors.As(err, &missing) {
+		return dependency, missing.Error()
+	}
 	for _, rule := range append(slices.Clone(cleanupFailures), []rule{
 		{output.ErrConflict, storage}, {output.ErrNoFreeName, storage}, {output.ErrSourceChanged, storage},
 		{jobs.ErrCorrupt, configuration}, {jobs.ErrMismatch, configuration}, {jobs.ErrMissing, configuration}, {jobs.ErrBusy, configuration},
 		{credentials.ErrMissing, configuration}, {credentials.ErrInvalid, configuration}, {credentials.ErrTerminal, configuration},
 		{credentials.ErrNoKeyEntered, configuration}, {credentials.ErrKeychain, dependency},
 		{credentials.ErrUnavailable, dependency}, {setup.ErrUnsupportedPlatform, dependency}, {setup.ErrDoctorFailed, dependency},
-		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration}, {setup.ErrLocalModel, dependency}, {setup.ErrUnknownModel, configuration},
+		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration}, {setup.ErrLocalModel, dependency}, {setup.ErrUnknownModel, configuration}, {setup.ErrCustomModel, configuration}, {apple.ErrUnavailable, dependency}, {apple.ErrBuild, dependency},
+		{apple.ErrLanguage, configuration}, {apple.ErrOutput, processing}, {settings.ErrSettings, configuration},
 		{setup.ErrIntegrity, dependency}, {setup.ErrBusy, dependency}, {setup.ErrNotReady, dependency}, {subprocess.ErrStart, dependency},
 		{pipeline.ErrInput, configuration},
 		{transcript.ErrUnsupportedVersion, configuration}, {transcript.ErrSpeakerMapping, configuration},

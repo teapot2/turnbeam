@@ -179,6 +179,62 @@ func TestJobsRunOneAtATime(t *testing.T) {
 	}
 }
 
+func TestDefaultModelIsResolvedPerCall(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "meeting.wav")
+	writeFile(t, input, []byte("riff"))
+	var got pipeline.Options
+	s := newServer(dir, publishing(func(o pipeline.Options) { got = o }))
+	current, failure := "nemotron-3.5", error(nil)
+	s.Default = func(context.Context) (string, error) { return current, failure }
+	c := serve(t, s)
+	var view jobView
+	decode(t, c.call("transcribe", map[string]any{"path": input}, nil).StructuredContent, &view)
+	if view.State != stateDone || view.Model != "nemotron-3.5" || got.Model != "nemotron-3.5" {
+		t.Fatalf("default not used: %+v", view)
+	}
+	// A default saved while the server runs applies to the next call.
+	current = "parakeet"
+	decode(t, c.call("transcribe", map[string]any{"path": input}, nil).StructuredContent, &view)
+	if view.Model != "parakeet" {
+		t.Fatalf("changed default not picked up: %+v", view)
+	}
+	current = "/models/mine.gguf"
+	if msg := c.failure("transcribe", map[string]any{"path": input}); !strings.Contains(msg, "cannot be used here") {
+		t.Fatal(msg)
+	}
+	current, failure = "", errors.New("settings file is invalid")
+	if msg := c.failure("transcribe", map[string]any{"path": input}); !strings.Contains(msg, "cannot determine the default model") {
+		t.Fatal(msg)
+	}
+	decode(t, c.call("transcribe", map[string]any{"path": input, "model": "parakeet"}, nil).StructuredContent, &view)
+	if view.State != stateDone {
+		t.Fatalf("a named model must not need the default: %+v", view)
+	}
+}
+
+func TestTranscribeWithApple(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "meeting.wav")
+	writeFile(t, input, []byte("riff"))
+	var got pipeline.Options
+	c := serve(t, newServer(dir, publishing(func(o pipeline.Options) { got = o })))
+	var view jobView
+	decode(t, c.call("transcribe", map[string]any{"path": input, "model": "apple", "language": "es-MX"}, nil).StructuredContent, &view)
+	if view.State != stateDone || view.Model != "apple" || got.Model != "apple" || got.Language != "es-MX" {
+		t.Fatalf("apple job: %+v, options %+v", view, got)
+	}
+	for _, args := range []map[string]any{
+		{"path": input, "model": "parakeet", "language": "es-MX"},
+		{"path": input, "model": "apple", "language": "es MX"},
+		{"path": input, "model": "apple", "resume": true},
+	} {
+		if msg := c.failure("transcribe", args); msg == "" {
+			t.Fatalf("%v accepted", args)
+		}
+	}
+}
+
 func TestTranscribeKeepsExistingTranscripts(t *testing.T) {
 	dir := t.TempDir()
 	real := realPath(t, dir)
@@ -215,7 +271,9 @@ func TestTranscribeKeepsExistingTranscripts(t *testing.T) {
 func TestListRecordings(t *testing.T) {
 	dir := t.TempDir()
 	real := realPath(t, dir)
-	now := time.Now()
+	// Anchor at noon yesterday, so offsets of a few hours never cross midnight.
+	today := time.Now()
+	now := time.Date(today.Year(), today.Month(), today.Day()-1, 12, 0, 0, 0, time.Local)
 	files := map[string]time.Time{
 		"a.mp4": now.Add(-time.Hour), "b.m4a": now.Add(-72 * time.Hour), "notes.txt": now, ".hidden.mp4": now,
 		filepath.Join("sub", "c.wav"): now.Add(-2 * time.Hour), filepath.Join("sub", "d1", "d2", "d3", "deep.mp3"): now,
@@ -430,7 +488,10 @@ func TestStatus(t *testing.T) {
 	if key := view.Checks[2]; key.Name != "Meta API key" || !key.OK || !strings.Contains(key.Message, "only model meta") {
 		t.Fatalf("key check: %+v", key)
 	}
-	if len(view.Models) != 3 || view.Models[0].Name != "meta" || view.Models[0].Ready || !strings.Contains(view.Models[0].Status, "needs a key") || view.Models[0].Default ||
+	if last := view.Models[len(view.Models)-1]; last.Name != "apple" || !last.Ready || last.Status != "installed (en-US)" {
+		t.Fatalf("apple: %+v", last)
+	}
+	if len(view.Models) != 2+len(setup.LocalModels()) || view.Models[0].Name != "meta" || view.Models[0].Ready || !strings.Contains(view.Models[0].Status, "needs a key") || view.Models[0].Default ||
 		view.Models[1].Name != "parakeet" || !view.Models[1].Ready || !view.Models[1].Default || view.Models[1].SizeMB != 714 ||
 		view.Models[2].Name != "nemotron-3.5" || view.Models[2].Ready || !strings.Contains(view.Models[2].Status, "not installed") {
 		t.Fatalf("models: %+v", view.Models)

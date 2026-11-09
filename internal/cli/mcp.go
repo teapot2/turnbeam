@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 
 	"github.com/teapot2/turnbeam/internal/mcp"
 
@@ -26,7 +29,8 @@ func newMCPCmd(version string, code *int, stdout io.Writer, run transcribeFunc, 
 			if err := validateInstallDir(cmd, dir); err != nil {
 				return err
 			}
-			if err := choice("model", defaultModel(), modelNames()...); err != nil {
+			// The server runs only catalog models; a saved default is checked per call.
+			if env := strings.TrimSpace(os.Getenv(modelEnv)); env != "" && choice("model", env, modelNames()...) != nil {
 				return fmt.Errorf("%s must be one of: %s", modelEnv, joinChoices(modelNames()))
 			}
 			return mcp.CheckRoots(roots)
@@ -35,7 +39,11 @@ func newMCPCmd(version string, code *int, stdout io.Writer, run transcribeFunc, 
 			*code = exitFailed
 			verbose, _ := cmd.Flags().GetBool("verbose")
 			server := &mcp.Server{
-				Version: version, Roots: roots, InstallDir: dir, DefaultModel: defaultModel(),
+				Version: version, Roots: roots, InstallDir: dir,
+				Default: func(ctx context.Context) (string, error) {
+					name, _, err := defaultModel(ctx, dir)
+					return name, err
+				},
 				Transcribe: run, Installation: factory(dir, nil, nil), KeyStatus: keys,
 				Describe: describeFailure, Stderr: cmd.ErrOrStderr(), Verbose: verbose,
 			}

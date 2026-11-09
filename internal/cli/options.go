@@ -1,14 +1,17 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"slices"
 	"strings"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/meta"
 	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/settings"
 	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
 
@@ -87,11 +90,14 @@ type transcribeOptions struct {
 	resume      bool
 	fresh       bool
 	installDir  string
+	language    string
 }
 
 func (o *transcribeOptions) addFlags(cmd *cobra.Command) {
 	o.outputOptions.addFlags(cmd, "next to the recording, with the format's extension")
-	cmd.Flags().StringVar(&o.model, "model", defaultModel(), "Transcription model `name`: meta (Meta Muse), or "+strings.Join(modelNames()[1:], " or ")+" on your Mac (see turnbeam models); "+modelEnv+" sets the default")
+	cmd.Flags().StringVar(&o.model, "model", "", "Transcription model `name`: meta (Meta Muse), "+strings.Join(modelNames()[1:], ", ")+" on your Mac (see turnbeam models), or a NeMo-Speech.cpp .gguf file of your own (default: "+modelEnv+", else the model saved with `turnbeam models default`, else the first installed local model, else meta)")
+	cmd.Flags().StringVar(&o.language, "language", "", "Language of the recording for --model apple, such as en-US or es-MX (default: your Mac's language)")
+	cmd.RegisterFlagCompletionFunc("language", cobra.NoFileCompletions)
 	cmd.Flags().StringVar(&o.mode, "mode", "diarization", "Meta mode: diarization (best speaker labels), endpointing")
 	cmd.Flags().IntVar(&o.concurrency, "concurrency", meta.DefaultConcurrency, "Maximum concurrent Meta requests")
 	cmd.Flags().BoolVar(&o.resume, "resume", false, "Continue an interrupted run without repeating paid work")
@@ -115,39 +121,118 @@ func (o *transcribeOptions) validate(cmd *cobra.Command) error {
 	if o.resume && o.fresh {
 		return fmt.Errorf("--resume and --fresh are mutually exclusive")
 	}
-	if err := choice("model", o.model, modelNames()...); err != nil {
-		if !cmd.Flags().Changed("model") {
-			return fmt.Errorf("%s must be one of: %s", modelEnv, joinChoices(modelNames()))
-		}
+	if err := validateInstallDir(cmd, o.installDir); err != nil {
 		return err
 	}
-	if _, local := setup.FindLocalModel(o.model); local {
-		for _, flag := range []string{"mode", "concurrency", "resume", "fresh"} {
-			if cmd.Flags().Changed(flag) {
-				return fmt.Errorf("--%s applies only to --model meta; local models use no Meta requests or checkpoints", flag)
+	source := "--model"
+	if !cmd.Flags().Changed("model") {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		name, from, err := defaultModel(ctx, o.installDir)
+		if err != nil {
+			return err
+		}
+		o.model, source = name, from
+	}
+	if err := choice("model", o.model, modelNames()...); err != nil && !setup.IsModelFile(o.model) {
+		switch source {
+		case "--model":
+			return err
+		case fromEnv:
+			return fmt.Errorf("%s must be one of: %s", modelEnv, joinChoices(modelNames()))
+		}
+		return fmt.Errorf("the default model %q (%s) is not available; choose one with `turnbeam models default NAME`", o.model, source)
+	}
+	if cmd.Flags().Changed("language") {
+		if o.model != apple.Model {
+			message := "--language applies only to --model apple"
+			if source != "--model" {
+				message += fmt.Sprintf(" (the default model is %s, %s)", o.model, source)
 			}
+			return errors.New(message)
+		}
+		if !apple.ValidLanguage(o.language) {
+			return fmt.Errorf("--language must be a language tag such as en-US or es-MX")
 		}
 	}
-	return validateInstallDir(cmd, o.installDir)
+	if _, local := setup.FindLocalModel(o.model); local || setup.IsModelFile(o.model) || o.model == apple.Model {
+		for _, flag := range []string{"mode", "concurrency", "resume", "fresh"} {
+			if !cmd.Flags().Changed(flag) {
+				continue
+			}
+			message := fmt.Sprintf("--%s applies only to --model meta; local models use no Meta requests or checkpoints", flag)
+			if source != "--model" {
+				message += fmt.Sprintf(" (the default model is %s, %s)", o.model, source)
+			}
+			return errors.New(message)
+		}
+	}
+	return nil
 }
 
 // modelEnv names the environment variable that sets the default --model.
 const modelEnv = "TURNBEAM_MODEL"
 
-// defaultModel is TURNBEAM_MODEL when set, otherwise Meta Muse.
-func defaultModel() string {
+// Where a default model came from, for messages.
+const (
+	fromEnv       = modelEnv
+	fromSaved     = "your saved default"
+	fromInstalled = "the first installed local model"
+	fromBuiltIn   = "the built-in default"
+)
+
+// defaultModel picks the model a run uses when --model is not given, and says
+// why: TURNBEAM_MODEL, then the saved default, then the first installed local
+// model, then meta. An unreadable settings file or installation is an error,
+// never a silent switch to the Meta API.
+func defaultModel(ctx context.Context, installDir string) (name, source string, err error) {
 	if model := strings.TrimSpace(os.Getenv(modelEnv)); model != "" {
-		return model
+		return model, fromEnv, nil
 	}
-	return pipeline.MetaModel
+	path, err := settings.Path()
+	if err != nil {
+		return "", "", err
+	}
+	saved, err := settings.Load(path)
+	if err != nil {
+		return "", "", err
+	}
+	if saved.DefaultModel != "" {
+		return saved.DefaultModel, fromSaved, nil
+	}
+	installed, err := (setup.Manager{Dir: installDir}).InstalledModels(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("find installed models for the default: %w", err)
+	}
+	if len(installed) > 0 {
+		return installed[0], fromInstalled, nil
+	}
+	if appleHelper(installDir).Built() {
+		return apple.Model, fromInstalled, nil
+	}
+	return pipeline.MetaModel, fromBuiltIn, nil
 }
 
-// modelNames lists every --model value: Meta first, then the local models.
+// appleService builds and queries the Apple Speech helper; tests replace it.
+type appleService interface {
+	Built() bool
+	Build(context.Context) error
+	Status(context.Context, string) (apple.State, error)
+	Install(context.Context, string) (apple.State, error)
+}
+
+var appleHelper = func(dir string) appleService { return apple.Helper{Dir: dir} }
+
+// modelNames lists every --model value: Meta first, then the pinned local
+// models, then Apple's on-device transcriber.
 func modelNames() []string {
 	names := []string{pipeline.MetaModel}
 	for _, model := range setup.LocalModels() {
 		names = append(names, model.Name)
 	}
+	names = append(names, apple.Model)
 	return names
 }
 

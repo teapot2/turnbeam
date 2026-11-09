@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
@@ -130,7 +131,7 @@ func modelNames() []string {
 	for _, model := range setup.LocalModels() {
 		names = append(names, model.Name)
 	}
-	return names
+	return append(names, apple.Model)
 }
 
 func joinChoices[T ~string](values []T) string {
@@ -192,7 +193,7 @@ var catalog = []tool{
 		Name: "transcribe",
 		Description: "Start transcribing a recording into a speaker-labeled transcript. Returns a job: when its state is not yet done, call job_status with the job_id. " +
 			"Writes the transcript next to the recording (or at output) plus a .transcript.json sidecar. Existing files are never overwritten: when the name is taken, the run writes a numbered one such as meeting-2.md, and the job's output and transcript fields give the actual paths. " +
-			"Local models (parakeet, nemotron-3.5) run on this Mac; meta sends the audio to Meta's API and needs a key.",
+			"Local models (parakeet, nemotron-3.5, nemotron-en, parakeet-ctc, and apple, Apple's own transcriber with language) run on this Mac; meta sends the audio to Meta's API and needs a key.",
 		InputSchema: map[string]any{
 			"type": "object", "additionalProperties": false, "required": []any{"path"},
 			"properties": map[string]any{
@@ -202,6 +203,7 @@ var catalog = []tool{
 				"format":       enumSchema("Transcript format (default: from the output extension, else markdown).", transcript.Formats),
 				"timestamps":   enumSchema("Timestamp style for markdown and text (default start).", transcript.TimestampStyles),
 				"resume":       map[string]any{"type": "boolean", "description": "Meta only: continue an interrupted run from its checkpoints instead of paying again."},
+				"language":     map[string]any{"type": "string", "description": "apple only: the recording's language as a tag such as en-US or es-MX (default: the Mac's language)."},
 				"wait_seconds": map[string]any{"type": "integer", "description": "How long to wait for the job before returning (default 20, at most 300).", "minimum": 0, "maximum": maxWaitSeconds},
 			},
 		},

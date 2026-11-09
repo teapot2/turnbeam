@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/setup"
@@ -57,12 +58,14 @@ func status(ctx context.Context, s *Server, _ *call, raw json.RawMessage) (*tool
 		local = local || check.OK && check.LocalModel != ""
 	}
 	checks = append(checks, keyCheck(source, available, keyErr, local))
-	view := statusView{Ready: true, Checks: []checkView{}, DefaultModel: s.DefaultModel, Roots: s.roots, Jobs: s.jobs.list()}
+	// An unusable default is reported as none; transcribe explains it.
+	defaultModel, _ := s.defaultModel(ctx)
+	view := statusView{Ready: true, Checks: []checkView{}, DefaultModel: defaultModel, Roots: s.roots, Jobs: s.jobs.list()}
 	for _, check := range checks {
 		view.Ready = view.Ready && check.OK
 		view.Checks = append(view.Checks, checkView{Name: check.Name, OK: check.OK, Message: check.Message, Fix: check.Fix})
 	}
-	meta := modelView{Name: pipeline.MetaModel, Runs: "Meta API", Ready: available && keyErr == nil, Default: s.DefaultModel == pipeline.MetaModel}
+	meta := modelView{Name: pipeline.MetaModel, Runs: "Meta API", Ready: available && keyErr == nil, Default: defaultModel == pipeline.MetaModel}
 	switch {
 	case keyErr != nil:
 		meta.Status = "key could not be read"
@@ -74,7 +77,7 @@ func status(ctx context.Context, s *Server, _ *call, raw json.RawMessage) (*tool
 	view.Models = append(view.Models, meta)
 	for _, status := range statuses {
 		model := modelView{Name: status.Model.Name, Runs: "on device", Ready: status.Installed && status.Err == nil, Status: "installed",
-			SizeMB: (status.Model.Size() + 500_000) / 1_000_000, Languages: status.Model.Languages, License: status.Model.License, Default: s.DefaultModel == status.Model.Name}
+			SizeMB: (status.Model.Size() + 500_000) / 1_000_000, Languages: status.Model.Languages, License: status.Model.License, Default: defaultModel == status.Model.Name}
 		switch {
 		case status.Err != nil:
 			model.Status = "damaged; run `turnbeam setup --model " + status.Model.Name + "`"
@@ -83,7 +86,29 @@ func status(ctx context.Context, s *Server, _ *call, raw json.RawMessage) (*tool
 		}
 		view.Models = append(view.Models, model)
 	}
+	view.Models = append(view.Models, s.appleView(ctx, defaultModel))
 	return result(view)
+}
+
+// appleView reports Apple's transcriber for the Mac's language.
+func (s *Server) appleView(ctx context.Context, defaultModel string) modelView {
+	view := modelView{Name: apple.Model, Runs: "on device", Languages: "many; pass language", License: "Apple (macOS)", Default: defaultModel == apple.Model,
+		Status: "not set up; run `turnbeam setup --model apple`"}
+	if !s.Apple.Built() {
+		return view
+	}
+	state, err := s.Apple.Status(ctx, "")
+	switch {
+	case errors.Is(err, apple.ErrUnavailable):
+		view.Status = "needs macOS 26 or later"
+	case err != nil:
+		view.Status = "could not be checked"
+	case state.Status == "installed":
+		view.Ready, view.Status = true, "installed ("+state.Locale+")"
+	default:
+		view.Status = state.Locale + " not downloaded; run `turnbeam setup --model apple`"
+	}
+	return view
 }
 
 func keyCheck(source credentials.Source, available bool, err error, localModel bool) setup.Check {

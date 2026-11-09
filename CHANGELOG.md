@@ -7,6 +7,41 @@ minor versions may change the CLI or the transcript JSON schema.
 
 ## [Unreleased]
 
+### Added
+
+- Two more local models for English, on the same pinned runtime: `nemotron-en`
+  (Nemotron Speech Streaming 0.6B), the most accurate local model on the AMI
+  test meeting at 24% word errors, and `parakeet-ctc` (Parakeet CTC 1.1B),
+  which writes no punctuation or capitals and takes about 9 minutes for 21
+  minutes of audio. Install them with `setup --model NAME`. Nemotron EN's word
+  times are moved 250 ms earlier, as measured against human timings.
+- `--model` also accepts a `.gguf` file of your own, such as a NeMo checkpoint
+  you converted for NeMo-Speech.cpp. It is not pinned or calibrated: Turnbeam
+  warns, uses its word times as reported, and records the file's SHA-256 in
+  the transcript. Only the command line accepts files; the MCP server keeps to
+  the catalog.
+- `--model apple` transcribes with Apple's on-device SpeechTranscriber on
+  macOS 26 and later: about 10 seconds for a 21-minute meeting, 32% word
+  errors on the AMI test meeting, and many languages, chosen with
+  `--language` (default: your Mac's language). `turnbeam setup --model apple
+  [--language TAG]` builds a small Swift helper from bundled source with the
+  Xcode Command Line Tools and asks macOS for Apple's speech model. The MCP
+  `transcribe` tool takes `model: apple` and `language` too.
+- `turnbeam models default NAME` saves the model used when `--model` is not
+  given, in `settings.json` in Turnbeam's Application Support folder;
+  `turnbeam models default` shows it and why, and `auto` removes it. The MCP
+  server reads the saved default for each call, so a change applies without a
+  restart.
+
+### Changed
+
+- Without `--model`, Turnbeam now uses `TURNBEAM_MODEL`, then the saved
+  default, then the first installed local model, and only then `meta`.
+  Before, it used `meta` whenever `TURNBEAM_MODEL` was unset, so someone with
+  only local models had to pass `--model` every time. If you have a Meta key
+  and local models installed and want Meta by default, run
+  `turnbeam models default meta`.
+
 ## [0.2.1] - 2026-11-08
 
 ### Changed

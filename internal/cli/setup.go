@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/progress"
 	"github.com/teapot2/turnbeam/internal/setup"
@@ -29,11 +32,11 @@ func addSetupCommands(root *cobra.Command, code *int, factory setupFactory, keys
 }
 
 func newSetupCmd(code *int, factory setupFactory) *cobra.Command {
-	var dir string
+	var dir, language string
 	var models []string
 	cmd := &cobra.Command{
 		Use: "setup", Short: "Download and verify the local models", Args: cobra.NoArgs, GroupID: groupSetup,
-		Example: "  turnbeam setup\n  turnbeam setup --model parakeet\n  turnbeam setup --install-dir ~/models/turnbeam",
+		Example: "  turnbeam setup\n  turnbeam setup --model parakeet\n  turnbeam setup --model apple --language es-MX\n  turnbeam setup --install-dir ~/models/turnbeam",
 		PreRunE: func(cmd *cobra.Command, _ []string) error {
 			for _, name := range models {
 				if name == pipeline.MetaModel {
@@ -43,14 +46,25 @@ func newSetupCmd(code *int, factory setupFactory) *cobra.Command {
 					return err
 				}
 			}
+			if cmd.Flags().Changed("language") {
+				if !slices.Contains(models, apple.Model) {
+					return errors.New("--language applies only to --model apple")
+				}
+				if !apple.ValidLanguage(language) {
+					return fmt.Errorf("--language must be a language tag such as en-US or es-MX")
+				}
+			}
 			return validateInstallDir(cmd, dir)
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			*code = exitFailed
 			quiet, reporter := setupReporter(cmd)
 			what, done := "the speaker runtime and model", "Installed and verified. Run `turnbeam doctor` to check all dependencies."
+			// Apple's transcriber is not a pinned download: it is set up after.
+			withApple := slices.Contains(models, apple.Model)
+			pinned := slices.DeleteFunc(slices.Clone(models), func(name string) bool { return name == apple.Model })
 			var extra []string
-			for _, name := range models {
+			for _, name := range pinned {
 				model, _ := setup.FindLocalModel(name)
 				extra = append(extra, fmt.Sprintf("%s (%s)", model.Title, megabytes(model.Size())))
 			}
@@ -65,20 +79,59 @@ func newSetupCmd(code *int, factory setupFactory) *cobra.Command {
 					return err
 				}
 			}
-			_, err := factory(dir, models, func(p setup.Progress) { reporter.Setup(p) }).Install(cmd.Context())
+			_, err := factory(dir, pinned, func(p setup.Progress) { reporter.Setup(p) }).Install(cmd.Context())
 			// End any open progress bar before the result or error is printed.
 			reporter.Close()
-			if err != nil || quiet {
+			if err != nil {
 				return err
+			}
+			if withApple {
+				if err := setupApple(cmd, dir, language, quiet); err != nil {
+					return err
+				}
+			}
+			if quiet {
+				return nil
 			}
 			_, err = fmt.Fprintln(cmd.ErrOrStderr(), done)
 			return err
 		},
 	}
 	addInstallDirFlag(cmd, &dir)
+	cmd.Flags().StringVar(&language, "language", "", "Language to set up for --model apple, such as en-US or es-MX (default: your Mac's language)")
 	cmd.Flags().StringSliceVar(&models, "model", nil, "Also install the local transcription model with this `name`: "+strings.Join(modelNames()[1:], ", ")+" (repeatable; see turnbeam models)")
 	completeChoices(cmd, "model", modelNames()[1:])
 	return cmd
+}
+
+// setupApple builds the Apple Speech helper and asks macOS for Apple's speech
+// model in one language. macOS downloads and keeps that model itself.
+func setupApple(cmd *cobra.Command, dir, language string, quiet bool) error {
+	say := func(format string, a ...any) error {
+		if quiet {
+			return nil
+		}
+		_, err := fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", a...)
+		return err
+	}
+	helper := appleHelper(dir)
+	if err := say("==> Building the Apple Speech helper (Xcode Command Line Tools)"); err != nil {
+		return err
+	}
+	if err := helper.Build(cmd.Context()); err != nil {
+		return err
+	}
+	if err := say("==> Getting Apple's speech model from macOS"); err != nil {
+		return err
+	}
+	state, err := helper.Install(cmd.Context(), language)
+	if err != nil {
+		return err
+	}
+	if state.Status != "installed" {
+		return fmt.Errorf("Apple's speech model for %s is %s, not installed yet; run setup again in a few minutes", state.Locale, state.Status)
+	}
+	return say("    %s ready", state.Locale)
 }
 
 func newDoctorCmd(code *int, factory setupFactory, keys keyStatus) *cobra.Command {

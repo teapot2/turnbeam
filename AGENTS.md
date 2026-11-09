@@ -1,6 +1,6 @@
 # Turnbeam
 
-Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare media, Meta Muse or a pinned on-device model (`--model`) transcribes, and NeMo-Speech.cpp/Nemotron 3 diarizes the recording. `turnbeam mcp` serves the same operations to AI assistants over the Model Context Protocol (stdio).
+Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare media, Meta Muse, a pinned on-device model or Apple's SpeechTranscriber (`--model`; a Swift helper in `internal/apple` built at setup) transcribes, and NeMo-Speech.cpp/Nemotron 3 diarizes the recording. `turnbeam mcp` serves the same operations to AI assistants over the Model Context Protocol (stdio).
 
 ## Context and Scope
 - Read available specifications and relevant code before pipeline changes; disclose missing requirements. Read `.codex/private-context.md` if present, but do not require it.

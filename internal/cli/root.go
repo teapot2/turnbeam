@@ -97,7 +97,7 @@ func newRootWithTranscriber(version string, code *int, stdout io.Writer, run tra
 			*code = exitFailed
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			verbose, _ := cmd.Flags().GetBool("verbose")
-			options := pipeline.Options{Model: opts.model, Mode: opts.mode, Concurrency: opts.concurrency, Resume: opts.resume, Fresh: opts.fresh, InstallDir: opts.installDir}
+			options := pipeline.Options{Model: opts.model, Mode: opts.mode, Concurrency: opts.concurrency, Resume: opts.resume, Fresh: opts.fresh, InstallDir: opts.installDir, Language: opts.language}
 			options.Render = opts.render()
 			options.Output = opts.destination(output.DefaultPath(args[0], options.Render.Format))
 			options.Progress.Quiet, options.Progress.Verbose = quiet, verbose

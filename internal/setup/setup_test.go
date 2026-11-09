@@ -928,6 +928,13 @@ func localChecks(t *testing.T, m Manager) []Check {
 	return local
 }
 
+func TestInstalledModelsWithoutAnInstallation(t *testing.T) {
+	names, err := Manager{Dir: filepath.Join(t.TempDir(), "missing")}.InstalledModels(context.Background())
+	if err != nil || names != nil {
+		t.Fatalf("missing installation: %v, %v", names, err)
+	}
+}
+
 func TestLocalModelsAreOptionalAndInstalledSideBySide(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t, "")
@@ -937,6 +944,9 @@ func TestLocalModelsAreOptionalAndInstalledSideBySide(t *testing.T) {
 	}
 	if checks := localChecks(t, f.manager); len(checks) != 1 || !checks[0].OK || checks[0].LocalModel != "" || !strings.Contains(checks[0].Message, "none installed") {
 		t.Fatalf("missing optional models must not fail doctor: %+v", checks)
+	}
+	if names, err := f.manager.InstalledModels(ctx); err != nil || len(names) != 0 {
+		t.Fatalf("models before any was installed: %v, %v", names, err)
 	}
 	parakeet := f.manager
 	parakeet.Models = []string{"parakeet"}
@@ -964,8 +974,11 @@ func TestLocalModelsAreOptionalAndInstalledSideBySide(t *testing.T) {
 	if err != nil || f.hits.Load() != 9 || len(both.ASRModels) != 2 {
 		t.Fatalf("second model: %+v, %v, %d downloads", both, err, f.hits.Load())
 	}
+	if names, err := f.manager.InstalledModels(ctx); err != nil || !reflect.DeepEqual(names, []string{"parakeet", "nemotron-3.5"}) {
+		t.Fatalf("installed models: %v, %v", names, err)
+	}
 	statuses, err := f.manager.LocalStatus(ctx)
-	if err != nil || len(statuses) != 2 || !statuses[0].Installed || !statuses[1].Installed {
+	if err != nil || len(statuses) != len(LocalModels()) || !statuses[0].Installed || !statuses[1].Installed || statuses[2].Installed || statuses[3].Installed {
 		t.Fatalf("status: %+v, %v", statuses, err)
 	}
 	if checks := localChecks(t, f.manager); len(checks) != 2 || checks[0].LocalModel != "parakeet" || checks[1].LocalModel != "nemotron-3.5" {

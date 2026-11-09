@@ -10,9 +10,11 @@ import (
 	"io"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/media"
 	"github.com/teapot2/turnbeam/internal/pipeline"
@@ -46,12 +48,17 @@ type Server struct {
 	Roots []string
 	// InstallDir locates the managed runtime and models; empty uses the default.
 	InstallDir string
-	// DefaultModel transcribes when a call names none.
+	// DefaultModel transcribes when a call names none, unless Default is set.
 	DefaultModel string
+	// Default, when set, picks the model for a call that names none, each time,
+	// so a default saved while the server runs applies to the next job.
+	Default func(context.Context) (string, error)
 	// Transcribe runs the pipeline; it defaults to pipeline.Runner.
 	Transcribe func(context.Context, string, pipeline.Options, io.Writer, io.Writer) error
 	// Installation defaults to setup.Manager for InstallDir.
 	Installation Installation
+	// Apple reports Apple's transcriber; it defaults to apple.Helper for InstallDir.
+	Apple AppleStatus
 	// KeyStatus reports whether a Meta API key is available, never the key.
 	KeyStatus func(context.Context) (credentials.Source, bool, error)
 	// Probe returns a recording's duration; it defaults to FFprobe.
@@ -109,6 +116,28 @@ func (f *inflight) wasCanceled(key string) bool {
 	return ok && c.canceled
 }
 
+// AppleStatus reports whether Apple's transcriber is set up, and for which language.
+type AppleStatus interface {
+	Built() bool
+	Status(context.Context, string) (apple.State, error)
+}
+
+// defaultModel is the model for a call that names none. The server runs only
+// catalog models, so a default that is a model file must be named instead.
+func (s *Server) defaultModel(ctx context.Context) (string, error) {
+	if s.Default == nil {
+		return s.DefaultModel, nil
+	}
+	name, err := s.Default(ctx)
+	if err != nil {
+		return "", argumentError("cannot determine the default model (%s); pass model", s.describe(err))
+	}
+	if !slices.Contains(modelNames(), name) {
+		return "", argumentError("the default model %s cannot be used here; pass model, one of: %s", name, strings.Join(modelNames(), ", "))
+	}
+	return name, nil
+}
+
 func (s *Server) init() error {
 	roots, err := newRoots(s.Roots)
 	if err != nil {
@@ -118,7 +147,7 @@ func (s *Server) init() error {
 	if s.DefaultModel == "" {
 		s.DefaultModel = pipeline.MetaModel
 	}
-	if !slices.Contains(modelNames(), s.DefaultModel) {
+	if s.Default == nil && !slices.Contains(modelNames(), s.DefaultModel) {
 		return fmt.Errorf("default model must be one of: %v", modelNames())
 	}
 	if s.Transcribe == nil {
@@ -126,6 +155,9 @@ func (s *Server) init() error {
 	}
 	if s.Installation == nil {
 		s.Installation = setup.Manager{Dir: s.InstallDir}
+	}
+	if s.Apple == nil {
+		s.Apple = apple.Helper{Dir: s.InstallDir}
 	}
 	if s.KeyStatus == nil {
 		s.KeyStatus = credentials.Provider{}.Status

@@ -75,7 +75,11 @@ func TestNemoProcess(t *testing.T) {
 			os.Exit(3)
 		}
 	}
-	if i := slices.Index(args, "--model"); i < 0 || args[i+1] != "verified-asr" {
+	want := os.Getenv("TURNBEAM_ASR_MODEL")
+	if want == "" {
+		want = "verified-asr"
+	}
+	if i := slices.Index(args, "--model"); i < 0 || args[i+1] != want {
 		os.Exit(3)
 	}
 	data := nativeJSON
@@ -136,6 +140,29 @@ func TestTranscribeOrdersAndClipsWords(t *testing.T) {
 		t.Fatalf("words:\n got %+v\nwant %+v", words, want)
 	}
 	assertEmpty(t, a.TempDir)
+}
+
+// A custom model runs from its own file and needs only the runtime installed.
+func TestTranscribeCustomModel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "my model.gguf")
+	if err := os.WriteFile(path, []byte("gguf"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	custom, err := setup.CustomModel(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := fakeAdapter(t, "")
+	command := a.command
+	a.command = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := command(ctx, name, args...)
+		cmd.Env = append(cmd.Env, "TURNBEAM_ASR_MODEL="+path)
+		return cmd
+	}
+	words, err := a.Transcribe(context.Background(), prepared(t), custom)
+	if err != nil || len(words) != 4 || words[0].Start != 100*time.Millisecond {
+		t.Fatalf("custom model: %+v, %v", words, err)
+	}
 }
 
 // Nemotron 3.5 reports words late, so its times move 300 ms earlier; near the

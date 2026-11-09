@@ -55,7 +55,7 @@ func TestDefaults(t *testing.T) {
 	code := 2
 	root := newRoot("test-version", &code)
 	for name, want := range map[string]string{
-		"model": "meta", "mode": "diarization", "format": "markdown", "output": "", "timestamps": "start",
+		"model": "", "mode": "diarization", "format": "markdown", "output": "", "timestamps": "start",
 		"concurrency": "3", "resume": "false", "fresh": "false", "quiet": "false", "verbose": "false",
 	} {
 		flag := root.Flags().Lookup(name)
@@ -112,6 +112,12 @@ func TestModelIsForwardedAndDefaultsFromEnvironment(t *testing.T) {
 	}
 	if got, err := run("meeting.wav", "--model", "parakeet", "-o", "meeting.md"); err != nil || got.Model != "parakeet" || got.Resume || got.Output != "meeting.md" {
 		t.Fatalf("local model not forwarded: %+v, %v", got, err)
+	}
+	if got, err := run("meeting.wav", "--model", "/models/mine.gguf"); err != nil || got.Model != "/models/mine.gguf" {
+		t.Fatalf("model file not forwarded: %+v, %v", got, err)
+	}
+	if _, err := run("meeting.wav", "--model", "/models/mine.gguf", "--resume"); err == nil || !strings.Contains(err.Error(), "applies only to --model meta") {
+		t.Fatalf("Meta-only flag accepted with a model file: %v", err)
 	}
 	t.Setenv(modelEnv, "nemotron-3.5")
 	if got, err := run("meeting.wav"); err != nil || got.Model != "nemotron-3.5" {
@@ -176,7 +182,7 @@ func TestModelsCommandListsEveryModel(t *testing.T) {
 			t.Fatalf("models output lacks %q:\n%s", want, got)
 		}
 	}
-	if !strings.Contains(stderr.String(), modelEnv) || strings.Contains(got, modelEnv) {
+	if !strings.Contains(stderr.String(), "turnbeam models default NAME") || strings.Contains(got, "models default") {
 		t.Fatalf("hint must go to stderr: %q", stderr.String())
 	}
 }

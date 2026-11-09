@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/alignment"
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/chunking"
 	"github.com/teapot2/turnbeam/internal/credentials"
@@ -40,6 +41,16 @@ type resolver interface {
 type transcriber interface {
 	Transcribe(context.Context, *media.Prepared, setup.LocalModel) ([]asr.Word, error)
 }
+type appleTranscriber interface {
+	Transcribe(context.Context, *media.Prepared, string) (apple.Result, error)
+}
+
+// recognition is one on-device transcription with the provenance of the
+// engine that produced it.
+type recognition struct {
+	words           []asr.Word
+	model, revision string
+}
 
 // MetaModel selects Meta Muse transcription in Options.Model.
 const MetaModel = "meta"
@@ -57,6 +68,8 @@ type Runner struct {
 	CacheDir    string
 	// Transcriber recognizes speech on device with a local model.
 	Transcriber transcriber
+	// Apple recognizes speech with Apple's on-device transcriber.
+	Apple appleTranscriber
 }
 
 // Options separates inference/recovery choices from output presentation.
@@ -72,6 +85,9 @@ type Options struct {
 	Progress      progress.Options
 	// InstallDir locates the managed runtime/model; empty uses setup.DefaultDir.
 	InstallDir string
+	// Language is a BCP-47 tag for Apple's transcriber (apple.Model only);
+	// empty means the Mac's language.
+	Language string
 	// Saved, when set, receives the published transcript and sidecar paths. They
 	// differ from Output when that name was taken. It is not called for stdout.
 	Saved func(path, sidecar string)
@@ -88,8 +104,18 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 		mode = meta.Diarization
 	}
 	local, isLocal := setup.FindLocalModel(opts.Model)
+	isApple := opts.Model == apple.Model
+	if opts.Language != "" && (!isApple || !apple.ValidLanguage(opts.Language)) {
+		return errors.New("invalid pipeline options: language applies only to the apple model and must be a language tag")
+	}
+	if !isLocal && setup.IsModelFile(opts.Model) {
+		if local, err = setup.CustomModel(ctx, opts.Model); err != nil {
+			return err
+		}
+		isLocal = true
+	}
 	if opts.Resume && opts.Fresh || opts.Concurrency < 0 || mode != meta.Diarization && mode != meta.Endpointing ||
-		opts.Model != "" && opts.Model != MetaModel && !isLocal || isLocal && (opts.Resume || opts.Fresh) {
+		opts.Model != "" && opts.Model != MetaModel && !isLocal && !isApple || (isLocal || isApple) && (opts.Resume || opts.Fresh) {
 		return errors.New("invalid pipeline options")
 	}
 	if err := opts.Render.Validate(); err != nil {
@@ -107,6 +133,11 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 	reporter := progress.New(stderr, opts.Progress)
 	// Progress is diagnostics only: a broken stderr must not fail a published transcript.
 	defer reporter.Close()
+	if local.Custom() {
+		if err = reporter.WarnCustomModel(ctx, local.File); err != nil {
+			return err
+		}
+	}
 	if err = reporter.Stage(ctx, progress.Probe); err != nil {
 		return err
 	}
@@ -116,9 +147,31 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 	}
 	defer func() { err = errors.Join(err, destination.Close()) }()
 	var canonical *transcript.Transcript
-	if isLocal {
-		canonical, err = r.processLocal(ctx, input, local, opts, reporter)
-	} else {
+	switch {
+	case isApple:
+		recognizer := r.Apple
+		if recognizer == nil {
+			helper := apple.Helper{Dir: opts.InstallDir}
+			// Fail before preparing audio when the helper was never built.
+			if !helper.Built() {
+				return &apple.SetupError{Language: opts.Language}
+			}
+			recognizer = helper
+		}
+		canonical, err = r.processLocal(ctx, input, func(ctx context.Context, prepared *media.Prepared) (recognition, error) {
+			result, err := recognizer.Transcribe(ctx, prepared, opts.Language)
+			return recognition{words: result.Words, model: "Apple SpeechTranscriber (" + result.Locale + ")", revision: result.OS}, err
+		}, opts, reporter)
+	case isLocal:
+		recognizer := r.Transcriber
+		if recognizer == nil {
+			recognizer = asr.Adapter{InstallDir: opts.InstallDir}
+		}
+		canonical, err = r.processLocal(ctx, input, func(ctx context.Context, prepared *media.Prepared) (recognition, error) {
+			words, err := recognizer.Transcribe(ctx, prepared, local)
+			return recognition{words: words, model: local.File, revision: local.Revision}, err
+		}, opts, reporter)
+	default:
 		canonical, err = r.process(ctx, input, mode, opts, reporter)
 	}
 	if err != nil {
@@ -345,7 +398,7 @@ func (w *invocation) finish(ctx context.Context, settings jobs.Settings, inputHa
 // processLocal transcribes the whole recording on device. Nothing is sent
 // anywhere or checkpointed: a rerun costs only time. Transcription runs before
 // diarization so a missing local model fails before the longer analysis.
-func (r Runner) processLocal(ctx context.Context, input string, model setup.LocalModel, opts Options, reporter *progress.Reporter) (result *transcript.Transcript, err error) {
+func (r Runner) processLocal(ctx context.Context, input string, recognize func(context.Context, *media.Prepared) (recognition, error), opts Options, reporter *progress.Reporter) (result *transcript.Transcript, err error) {
 	defer func() {
 		if err != nil {
 			result = nil
@@ -375,15 +428,11 @@ func (r Runner) processLocal(ctx context.Context, input string, model setup.Loca
 	if err := reporter.Stage(ctx, progress.TranscribeLocal); err != nil {
 		return nil, err
 	}
-	recognizer := r.Transcriber
-	if recognizer == nil {
-		recognizer = asr.Adapter{InstallDir: opts.InstallDir}
-	}
-	recognized, err := recognizer.Transcribe(ctx, prepared, model)
+	recognized, err := recognize(ctx, prepared)
 	if err != nil {
 		return nil, err
 	}
-	reporter.WordsTranscribed(len(recognized))
+	reporter.WordsTranscribed(len(recognized.words))
 
 	if err := reporter.Stage(ctx, progress.Diarize); err != nil {
 		return nil, err
@@ -416,13 +465,13 @@ func (r Runner) processLocal(ctx context.Context, input string, model setup.Loca
 	if err := reporter.Stage(ctx, progress.AlignWords); err != nil {
 		return nil, err
 	}
-	words := make([]alignment.Word, len(recognized))
-	for i, w := range recognized {
+	words := make([]alignment.Word, len(recognized.words))
+	for i, w := range recognized.words {
 		words[i] = alignment.Word{Text: w.Text, Start: w.Start, End: w.End}
 	}
 	settings := jobs.DefaultSettings(meta.Diarization)
 	recording := transcript.Recording{Name: filepath.Base(input), DurationMS: timeline.Duration.Milliseconds(), SHA256: inputHash}
-	provenance := transcript.Pipeline{Engine: transcript.EngineLocal, ASRModel: model.File, ASRRevision: model.Revision,
+	provenance := transcript.Pipeline{Engine: transcript.EngineLocal, ASRModel: recognized.model, ASRRevision: recognized.revision,
 		DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}
 	return alignment.AlignWords(ctx, recording, provenance, words, timeline, alignment.DefaultPolicy())
 }

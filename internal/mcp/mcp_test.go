@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/output"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/progress"
@@ -255,6 +256,14 @@ func writeSidecar(t *testing.T, dir, stem string) string {
 	return path
 }
 
+// fakeApple reports Apple's transcriber as set up for en-US.
+type fakeApple struct{}
+
+func (fakeApple) Built() bool { return true }
+func (fakeApple) Status(context.Context, string) (apple.State, error) {
+	return apple.State{Locale: "en-US", Status: "installed", OS: "Version 27.0 (Build test)"}, nil
+}
+
 // publishing is a pipeline fake that reports progress and writes the sample
 // transcript through the real output package.
 func publishing(onCall func(pipeline.Options)) func(context.Context, string, pipeline.Options, io.Writer, io.Writer) error {
@@ -298,6 +307,6 @@ func gated(release <-chan struct{}, started chan<- string) func(context.Context,
 }
 
 func newServer(dir string, transcribe func(context.Context, string, pipeline.Options, io.Writer, io.Writer) error) *Server {
-	return &Server{Version: "test", Roots: []string{dir}, DefaultModel: "parakeet", Transcribe: transcribe,
+	return &Server{Version: "test", Roots: []string{dir}, DefaultModel: "parakeet", Transcribe: transcribe, Apple: fakeApple{},
 		Probe: func(context.Context, string) (time.Duration, error) { return 0, errors.New("no probe in this test") }}
 }

@@ -90,6 +90,17 @@ func (r *Reporter) WarnSpeakerLimit(ctx context.Context) error {
 	return r.line("Warning: speaker model limit reached; additional participants may be merged.")
 }
 
+// WarnCustomModel reports, even in quiet mode, that a user-supplied model file
+// is unpinned and its word times uncorrected.
+func (r *Reporter) WarnCustomModel(ctx context.Context, file string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.line("Warning: " + displayPath(file) + " is your own model file, not a pinned one; its word times are not calibrated, so some words may get the wrong speaker.")
+}
+
 // line prints a persistent line. An open live step line is cleared first and
 // redrawn below; an open setup bar is ended with a newline.
 func (r *Reporter) line(message string) error {

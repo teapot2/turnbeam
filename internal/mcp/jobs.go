@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/output"
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/progress"
@@ -81,6 +82,7 @@ type job struct {
 	// requested is the output asked for; output is a free numbered name when
 	// that one is taken, and is updated if another writer takes it meanwhile.
 	requested, note string
+	language        string
 	render          transcript.RenderOptions
 	resume          bool
 
@@ -235,7 +237,7 @@ func (t *jobTable) wait() { t.wg.Wait() }
 func (s *Server) runJob(ctx context.Context, j *job) {
 	j.update(func() { j.state, j.started = stateRunning, time.Now() })
 	var sidecar string
-	opts := pipeline.Options{Model: j.model, Output: j.requested, Render: j.render, Resume: j.resume, InstallDir: s.InstallDir,
+	opts := pipeline.Options{Model: j.model, Output: j.requested, Render: j.render, Resume: j.resume, InstallDir: s.InstallDir, Language: j.language,
 		Progress: progress.Options{Quiet: true, Observer: j.observe},
 		Saved: func(path, side string) {
 			sidecar = side
@@ -294,6 +296,7 @@ type transcribeArgs struct {
 	Format      string `json:"format"`
 	Timestamps  string `json:"timestamps"`
 	Resume      bool   `json:"resume"`
+	Language    string `json:"language"`
 	WaitSeconds *int   `json:"wait_seconds"`
 }
 
@@ -315,13 +318,18 @@ func transcribe(ctx context.Context, s *Server, c *call, raw json.RawMessage) (*
 	}
 	model := args.Model
 	if model == "" {
-		model = s.DefaultModel
+		if model, err = s.defaultModel(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if !slices.Contains(modelNames(), model) {
 		return nil, argumentError("model must be one of: %s", strings.Join(modelNames(), ", "))
 	}
-	if _, local := setup.FindLocalModel(model); local && args.Resume {
+	if _, local := setup.FindLocalModel(model); (local || model == apple.Model) && args.Resume {
 		return nil, argumentError("resume applies only to model meta; local runs are not checkpointed")
+	}
+	if args.Language != "" && (model != apple.Model || !apple.ValidLanguage(args.Language)) {
+		return nil, argumentError("language applies only to model apple and must be a tag such as en-US or es-MX")
 	}
 	render, err := renderOptions(args.Format, args.Timestamps, args.Output)
 	if err != nil {
@@ -358,7 +366,7 @@ func transcribe(ctx context.Context, s *Server, c *call, raw json.RawMessage) (*
 		view, _, _ := existing.snapshot()
 		return nil, argumentError("job %s is already transcribing to %s; call job_status", view.JobID, out)
 	}
-	j := &job{input: input, requested: requested, output: out, sidecar: sidecar, note: note, model: model, render: render, resume: args.Resume}
+	j := &job{input: input, requested: requested, output: out, sidecar: sidecar, note: note, model: model, language: args.Language, render: render, resume: args.Resume}
 	s.jobs.start(j)
 	if s.Verbose {
 		s.log.Printf("job %s started with model %s", j.id, model)

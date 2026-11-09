@@ -29,7 +29,7 @@ func TestErrorClassesDoNotPrintUntrustedCauses(t *testing.T) {
 	}{
 		{credentials.ErrMissing, configuration}, {pipeline.ErrInput, configuration}, {jobs.ErrCorrupt, configuration},
 		{setup.ErrNotReady, dependency}, {subprocess.ErrStart, dependency},
-		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration},
+		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration}, {setup.ErrCustomModel, configuration},
 		{asr.ErrOutput, processing}, {asr.ErrCleanup, storage},
 		{errors.Join(credentials.ErrNoKeyEntered, io.EOF), configuration},
 		{fmt.Errorf("%w (OSStatus -25293)", credentials.ErrKeychain), dependency},

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/alignment"
+	"github.com/teapot2/turnbeam/internal/apple"
 	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/diarization"
@@ -398,6 +399,82 @@ func TestLocalModelsNeedNoKeyMetaOrCache(t *testing.T) {
 	nemotron, _ := setup.FindLocalModel("nemotron-3.5")
 	if recognizer.model != "nemotron-3.5" || p.Engine != transcript.EngineLocal || p.ASRModel != nemotron.File || p.ASRRevision != nemotron.Revision || p.MetaModel != "" || p.DiarizationRevision != setup.ModelRevision || len(doc.SourceChunks) != 0 {
 		t.Fatalf("local provenance: %+v", doc)
+	}
+}
+
+type fakeApple struct {
+	language string
+	calls    int
+}
+
+func (f *fakeApple) Transcribe(_ context.Context, _ *media.Prepared, language string) (apple.Result, error) {
+	f.calls++
+	f.language = language
+	return apple.Result{Locale: "es-MX", OS: "Version 27.0 (Build test)", Words: []asr.Word{{Text: "Hola.", Start: 200 * time.Millisecond, End: 800 * time.Millisecond}}}, nil
+}
+
+func TestAppleModel(t *testing.T) {
+	f, recognizer := localFixture(t)
+	fake := &fakeApple{}
+	f.runner.Apple = fake
+	var stdout bytes.Buffer
+	opts := Options{Model: apple.Model, Language: "es-MX", Render: transcript.RenderOptions{Format: transcript.FormatJSON}}
+	if err := f.runner.Run(context.Background(), f.input, opts, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := transcript.Decode(stdout.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fake.calls != 1 || fake.language != "es-MX" || recognizer.calls != 0 || f.auth.calls != 0 || f.calls != 0 ||
+		doc.Pipeline.Engine != transcript.EngineLocal || doc.Pipeline.ASRModel != "Apple SpeechTranscriber (es-MX)" || doc.Pipeline.ASRRevision != "Version 27.0 (Build test)" ||
+		len(doc.Turns) != 1 || doc.Turns[0].Text != "Hola." {
+		t.Fatalf("apple run: %+v", doc)
+	}
+	for _, bad := range []Options{{Model: apple.Model, Resume: true}, {Model: "parakeet", Language: "es-MX"}, {Model: apple.Model, Language: "es MX"}} {
+		if err := f.runner.Run(context.Background(), f.input, bad, io.Discard, io.Discard); err == nil {
+			t.Fatalf("invalid options accepted: %+v", bad)
+		}
+	}
+	// Without an injected recognizer, an unbuilt helper fails before any work.
+	f.runner.Apple = nil
+	prepares := f.media.prepare
+	if err := f.runner.Run(context.Background(), f.input, Options{Model: apple.Model, InstallDir: t.TempDir()}, io.Discard, io.Discard); !errors.Is(err, apple.ErrNotSetUp) || f.media.prepare != prepares {
+		t.Fatalf("unbuilt helper: %v", err)
+	}
+}
+
+func TestCustomModelFile(t *testing.T) {
+	f, recognizer := localFixture(t)
+	path := filepath.Join(f.dir, "fine-tuned.gguf")
+	if err := os.WriteFile(path, []byte("gguf"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	opts := Options{Model: path, Render: transcript.RenderOptions{Format: transcript.FormatJSON}, Progress: progress.Options{Quiet: true}}
+	if err := f.runner.Run(context.Background(), f.input, opts, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := transcript.Decode(stdout.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizer.model != path || doc.Pipeline.Engine != transcript.EngineLocal || doc.Pipeline.ASRModel != "fine-tuned.gguf" ||
+		doc.Pipeline.ASRRevision != "sha256:1cb1b7e0f8b96cee3445e317b8064d8805bf35c7dc7de82cddcb9f78d4c95e0e" {
+		t.Fatalf("custom model provenance: %s %+v", recognizer.model, doc.Pipeline)
+	}
+	if !strings.Contains(stderr.String(), "Warning: fine-tuned.gguf is your own model file") {
+		t.Fatalf("quiet run hid the custom model warning: %q", stderr.String())
+	}
+	calls := recognizer.calls
+	if err := f.runner.Run(context.Background(), f.input, Options{Model: filepath.Join(f.dir, "missing.gguf")}, io.Discard, io.Discard); !errors.Is(err, setup.ErrCustomModel) {
+		t.Fatalf("missing model file: %v", err)
+	}
+	if err := f.runner.Run(context.Background(), f.input, Options{Model: path, Resume: true}, io.Discard, io.Discard); err == nil {
+		t.Fatal("resume accepted for a custom model")
+	}
+	if recognizer.calls != calls {
+		t.Fatal("a rejected model file was transcribed")
 	}
 }
 

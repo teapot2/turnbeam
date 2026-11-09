@@ -186,6 +186,42 @@ func (m Manager) LocalStatus(ctx context.Context) ([]ModelStatus, error) {
 	return statuses, nil
 }
 
+// InstalledModels names the catalog models whose files are in the current
+// installation, in catalog order. It only checks that the files exist, so it is
+// fast enough to choose a default; Ready verifies a model before it is used.
+func (m Manager) InstalledModels(ctx context.Context) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	dir, err := m.directory()
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	installed, err := openCurrent(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer installed.Close()
+	var names []string
+	for _, model := range m.catalog().models {
+		if model.present(installed) {
+			names = append(names, model.Name)
+		}
+	}
+	return names, nil
+}
+
 func (m Manager) nativeChecks(ctx context.Context, installed Installation) (string, error) {
 	data, err := m.run(ctx, installed.Runtime, "--json", "doctor")
 	if err != nil {

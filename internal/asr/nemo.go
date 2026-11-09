@@ -70,15 +70,23 @@ func (a Adapter) Transcribe(ctx context.Context, recording *media.Prepared, mode
 	if err != nil {
 		return nil, fmt.Errorf("resolve normalized recording: %w", err)
 	}
+	// A custom model brings its own file; only the runtime must be installed.
+	required := []string{model.Name}
+	if model.Custom() {
+		required = nil
+	}
 	ready := a.ready
 	if ready == nil {
-		ready = (setup.Manager{Dir: a.InstallDir, Models: []string{model.Name}}).Ready
+		ready = (setup.Manager{Dir: a.InstallDir, Models: required}).Ready
 	}
 	installed, err := ready(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("prepare local transcription: %w", err)
 	}
 	path := installed.ASRModels[model.Name]
+	if model.Custom() {
+		path = model.Path()
+	}
 	if path == "" {
 		return nil, &setup.ModelError{Name: model.Name, Err: errors.New("not in the installation")}
 	}
@@ -129,6 +137,14 @@ func readOutput(path string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %w", ErrOutput, err)
 	}
 	return data, nil
+}
+
+// ParseWords validates word-timing JSON in the native runtime's shape (text and
+// words with start and end seconds), as other on-device engines also write it:
+// times move earlier by latency, words are sorted by start, and words slightly
+// past the end are clipped to it.
+func ParseWords(data []byte, duration, latency time.Duration) ([]Word, error) {
+	return parse(data, duration, latency)
 }
 
 // parse validates the native JSON. Unknown fields are ignored so a newer
