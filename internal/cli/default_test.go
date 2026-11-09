@@ -44,7 +44,7 @@ func saveDefault(t *testing.T, model string) {
 }
 
 func TestDefaultModelOrder(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	ctx := context.Background()
 	check := func(dir, want, wantSource string) {
 		t.Helper()
@@ -95,7 +95,7 @@ func runCLI(t *testing.T, args ...string) (pipeline.Options, string, string, err
 }
 
 func TestTranscriptionUsesTheDefault(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	dir := fakeInstall(t, "asr-parakeet.gguf")
 	if got, _, _, err := runCLI(t, "meeting.wav", "--install-dir", dir); err != nil || got.Model != "parakeet" {
 		t.Fatalf("installed default: %+v, %v", got, err)
@@ -113,8 +113,7 @@ func TestTranscriptionUsesTheDefault(t *testing.T) {
 }
 
 func TestModelsDefaultCommand(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateHome(t)
 	dir := fakeInstall(t, "asr-parakeet.gguf")
 	_, stdout, stderr, err := runCLI(t, "models", "default", "--install-dir", dir)
 	if err != nil || stdout != "parakeet\n" || !strings.Contains(stderr, fromInstalled) {

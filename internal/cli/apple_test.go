@@ -67,7 +67,7 @@ func runSetup(t *testing.T, service *fakeSetup, args ...string) (string, error) 
 }
 
 func TestSetupApple(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	fake := &fakeAppleService{status: "installed"}
 	useFakeApple(t, fake)
 	service := &fakeSetup{}
@@ -88,7 +88,7 @@ func TestSetupApple(t *testing.T) {
 }
 
 func TestAppleModelOptions(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 	fake := &fakeAppleService{built: true, status: "installed"}
 	useFakeApple(t, fake)
 	empty := t.TempDir()

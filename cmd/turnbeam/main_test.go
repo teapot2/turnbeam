@@ -169,11 +169,11 @@ func testCachedOutputs(t *testing.T, ctx context.Context, binary string) {
 		cmd := exec.CommandContext(ctx, binary, append([]string{input, "--resume"}, args...)...)
 		for _, entry := range os.Environ() {
 			name, _, _ := strings.Cut(entry, "=")
-			if name != "HOME" && name != "XDG_CACHE_HOME" && name != "META_API_KEY" && name != "PATH" {
+			if name != "HOME" && name != "XDG_CACHE_HOME" && name != "XDG_CONFIG_HOME" && name != "META_API_KEY" && name != "PATH" {
 				cmd.Env = append(cmd.Env, entry)
 			}
 		}
-		cmd.Env = append(cmd.Env, "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "PATH="+filepath.Join(home, "no-tools"), "META_API_KEY= invalid key must not be read ")
+		cmd.Env = append(cmd.Env, "HOME="+home, "XDG_CACHE_HOME="+filepath.Join(home, "cache"), "XDG_CONFIG_HOME="+filepath.Join(home, "config"), "PATH="+filepath.Join(home, "no-tools"), "META_API_KEY= invalid key must not be read ")
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err := cmd.Run()
