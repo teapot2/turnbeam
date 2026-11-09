@@ -7,6 +7,8 @@ minor versions may change the CLI or the transcript JSON schema.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
 ### Added
 
 - Two more local models for English, on the same pinned runtime: `nemotron-en`
@@ -107,7 +109,8 @@ First release, for macOS on Apple Silicon.
 - Live progress, shell completion for zsh, bash and fish, and suggestions for
   mistyped commands.
 
-[Unreleased]: https://github.com/teapot2/turnbeam/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/teapot2/turnbeam/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/teapot2/turnbeam/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/teapot2/turnbeam/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/teapot2/turnbeam/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/teapot2/turnbeam/releases/tag/v0.1.0
