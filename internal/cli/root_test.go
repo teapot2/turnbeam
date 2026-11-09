@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
 
 	"github.com/spf13/cobra"
@@ -54,7 +55,7 @@ func TestDefaults(t *testing.T) {
 	code := 2
 	root := newRoot("test-version", &code)
 	for name, want := range map[string]string{
-		"mode": "diarization", "format": "markdown", "output": "", "timestamps": "start",
+		"model": "meta", "mode": "diarization", "format": "markdown", "output": "", "timestamps": "start",
 		"concurrency": "3", "resume": "false", "fresh": "false", "quiet": "false", "verbose": "false",
 	} {
 		flag := root.Flags().Lookup(name)
@@ -97,6 +98,62 @@ func TestTranscriptionRoutesSeparateWritersAndOptions(t *testing.T) {
 	}
 }
 
+func TestModelIsForwardedAndDefaultsFromEnvironment(t *testing.T) {
+	run := func(args ...string) (pipeline.Options, error) {
+		code := 2
+		var got pipeline.Options
+		root := newRootWithTranscriber("test", &code, io.Discard, func(_ context.Context, _ string, o pipeline.Options, _, _ io.Writer) error {
+			got = o
+			return nil
+		})
+		root.SetArgs(args)
+		root.SetErr(io.Discard)
+		return got, root.ExecuteContext(context.Background())
+	}
+	if got, err := run("meeting.wav", "--model", "parakeet", "-o", "meeting.md"); err != nil || got.Model != "parakeet" || got.Resume || got.Output != "meeting.md" {
+		t.Fatalf("local model not forwarded: %+v, %v", got, err)
+	}
+	t.Setenv(modelEnv, "nemotron-3.5")
+	if got, err := run("meeting.wav"); err != nil || got.Model != "nemotron-3.5" {
+		t.Fatalf("%s default not used: %+v, %v", modelEnv, got, err)
+	}
+	if got, err := run("meeting.wav", "--model", "meta", "--resume"); err != nil || got.Model != "meta" || !got.Resume {
+		t.Fatalf("--model must override %s: %+v, %v", modelEnv, got, err)
+	}
+	t.Setenv(modelEnv, "whisper")
+	if _, err := run("meeting.wav"); err == nil || !strings.Contains(err.Error(), modelEnv+" must be one of") {
+		t.Fatalf("invalid %s: %v", modelEnv, err)
+	}
+}
+
+func TestModelsCommandListsEveryModel(t *testing.T) {
+	code := 2
+	root := newRoot("test", &code)
+	for _, command := range root.Commands() {
+		if command.Name() == "models" {
+			root.RemoveCommand(command)
+		}
+	}
+	service := &fakeSetup{}
+	root.AddCommand(newModelsCmd(&code, func(string, []string, func(setup.Progress)) setupService { return service }, storedKey))
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"models"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := stdout.String()
+	for _, want := range []string{"MODEL", "meta (default)", "ready (key in Keychain)", "parakeet", "714 MB", "CC-BY-4.0", "installed", "nemotron-3.5", "not installed; run `turnbeam setup --model nemotron-3.5`"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("models output lacks %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(stderr.String(), modelEnv) || strings.Contains(got, modelEnv) {
+		t.Fatalf("hint must go to stderr: %q", stderr.String())
+	}
+}
+
 func TestFlagOverrides(t *testing.T) {
 	var got transcribeOptions
 	cmd := &cobra.Command{}
@@ -112,7 +169,7 @@ func TestFlagOverrides(t *testing.T) {
 	}
 	want := transcribeOptions{
 		outputOptions: outputOptions{format: "json", output: "meeting.json", timestamps: "none"},
-		mode:          "endpointing", concurrency: 5, resume: true,
+		model:         "meta", mode: "endpointing", concurrency: 5, resume: true,
 	}
 	if got != want {
 		t.Fatalf("options=%+v, want %+v", got, want)
@@ -135,6 +192,15 @@ func TestInvalidArguments(t *testing.T) {
 		{[]string{"meeting.wav", "--concurrency", "no"}, "invalid argument"},
 		{[]string{"meeting.wav", "--concurrency", "999999999999999999999"}, "invalid argument"},
 		{[]string{"meeting.wav", "--resume", "--fresh"}, "mutually exclusive"},
+		{[]string{"meeting.wav", "--model", "whisper"}, "--model must be one of: meta, parakeet, nemotron-3.5"},
+		{[]string{"meeting.wav", "--model", "parakeet", "--resume"}, "--resume applies only to --model meta"},
+		{[]string{"meeting.wav", "--model", "parakeet", "--fresh"}, "--fresh applies only to --model meta"},
+		{[]string{"meeting.wav", "--model", "nemotron-3.5", "--mode", "diarization"}, "--mode applies only to --model meta"},
+		{[]string{"meeting.wav", "--model", "parakeet", "--concurrency", "2"}, "--concurrency applies only to --model meta"},
+		{[]string{"setup", "--model", "meta"}, "--model meta needs no download"},
+		{[]string{"setup", "--model", "whisper"}, "--model must be one of: parakeet, nemotron-3.5"},
+		{[]string{"doctor", "--model", "parakeet"}, "unknown flag"},
+		{[]string{"models", "extra"}, "unknown command"},
 		{[]string{"meeting.wav", "--output="}, "--output must not be empty"},
 		{[]string{"meeting.wav", "--output", " "}, "--output must not be empty"},
 		{[]string{"meeting.wav", "--unknown"}, "unknown flag"},

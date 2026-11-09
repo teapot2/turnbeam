@@ -160,7 +160,7 @@ func TestOfflineRejectsInvalidInputWithoutSideEffects(t *testing.T) {
 				f.Truncate(maxTranscriptBytes + 1)
 				f.Close()
 			case "future":
-				os.WriteFile(path, []byte(`{"schemaVersion":2}`), 0600)
+				os.WriteFile(path, []byte(`{"schemaVersion":3}`), 0600)
 			case "malformed":
 				os.WriteFile(path, []byte(`{"schemaVersion":1,"schemaVersion":1}`), 0600)
 			}

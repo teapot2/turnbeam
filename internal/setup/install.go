@@ -22,6 +22,9 @@ import (
 type Manager struct {
 	Dir    string
 	Client *http.Client
+	// Models names local models (LocalModel.Name) that Install adds and that
+	// Verify and Ready require. Install keeps every already installed one.
+	Models []string
 	// OnProgress, if set, receives Install activity on the calling goroutine.
 	OnProgress func(Progress)
 	// retryDelay and stallTimeout override download timing in tests.
@@ -33,10 +36,12 @@ type Manager struct {
 }
 
 // Installation identifies a fully verified, committed runtime/model pair.
+// ASRModels maps each verified local model's name to its file.
 type Installation struct {
 	Directory string
 	Runtime   string
 	Model     string
+	ASRModels map[string]string
 }
 
 // Installation errors; each message states its cause.
@@ -69,6 +74,31 @@ func (m Manager) catalog() catalog {
 		return *m.pins
 	}
 	return pinnedCatalog()
+}
+
+// requested resolves Models against the catalog.
+func (m Manager) requested() ([]LocalModel, error) {
+	pins := m.catalog()
+	var models []LocalModel
+	for _, name := range m.Models {
+		model, ok := pins.model(name)
+		if !ok {
+			return nil, fmt.Errorf("%w: %q", ErrUnknownModel, name)
+		}
+		if !slices.ContainsFunc(models, func(m LocalModel) bool { return m.Name == name }) {
+			models = append(models, model)
+		}
+	}
+	return models, nil
+}
+
+// withModels returns the catalog whose required assets include these models'.
+func (c catalog) withModels(models []LocalModel) catalog {
+	c.assets = slices.Clone(c.assets)
+	for _, model := range models {
+		c.assets = append(c.assets, model.assets...)
+	}
+	return c
 }
 
 func (m Manager) platform() error {
@@ -116,17 +146,31 @@ func openCurrent(root *os.Root) (*os.Root, error) {
 	return root.OpenRoot(pointer.Generation)
 }
 
-func paths(dir string) Installation {
-	return Installation{Directory: dir, Runtime: filepath.Join(dir, "runtime", "bin", "nemo-speech"), Model: filepath.Join(dir, "model.gguf")}
+func paths(dir string, models []LocalModel) Installation {
+	installed := Installation{Directory: dir, Runtime: filepath.Join(dir, "runtime", "bin", "nemo-speech"), Model: filepath.Join(dir, "model.gguf")}
+	if len(models) > 0 {
+		installed.ASRModels = make(map[string]string, len(models))
+		for _, model := range models {
+			installed.ASRModels[model.Name] = model.path(dir)
+		}
+	}
+	return installed
 }
 
 func verify(ctx context.Context, root *os.Root, pins catalog) error {
-	for _, a := range pins.assets {
+	if err := verifyAssets(ctx, root, pins.assets); err != nil {
+		return err
+	}
+	return verifyRuntime(ctx, root, pins.prefix)
+}
+
+func verifyAssets(ctx context.Context, root *os.Root, assets []artifact) error {
+	for _, a := range assets {
 		if err := verifyAsset(ctx, root, a); err != nil {
 			return err
 		}
 	}
-	return verifyRuntime(ctx, root, pins.prefix)
+	return nil
 }
 
 func privateDirectory(root *os.Root) error {
@@ -144,6 +188,10 @@ func privateDirectory(root *os.Root) error {
 // native execution. It never trusts stored file hashes supplied by the install.
 func (m Manager) Verify(ctx context.Context) (Installation, error) {
 	if err := ctx.Err(); err != nil {
+		return Installation{}, err
+	}
+	models, err := m.requested()
+	if err != nil {
 		return Installation{}, err
 	}
 	dir, err := m.directory()
@@ -166,7 +214,12 @@ func (m Manager) Verify(ctx context.Context) (Installation, error) {
 	if err := verify(ctx, installed, m.catalog()); err != nil {
 		return Installation{}, fmt.Errorf("installation damaged; rerun setup: %w", err)
 	}
-	return paths(installed.Name()), nil
+	for _, model := range models {
+		if err := verifyAssets(ctx, installed, model.assets); err != nil {
+			return Installation{}, &ModelError{Name: model.Name, Err: err}
+		}
+	}
+	return paths(installed.Name(), models), nil
 }
 
 // Ready verifies the managed installation and local Metal/model compatibility
@@ -224,14 +277,27 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 	}
 	defer lock.Close()
 	removeStale(root)
-	pins := m.catalog()
+	models, err := m.requested()
+	if err != nil {
+		return Installation{}, err
+	}
 	previous, _ := openCurrent(root)
 	if previous != nil {
 		defer previous.Close()
 		m.report(Progress{Step: StepCheck})
+		// A repair, upgrade or new model keeps every installed model, and
+		// downloads again any of its files that no longer verify.
+		for _, model := range m.catalog().models {
+			if !slices.ContainsFunc(models, func(m LocalModel) bool { return m.Name == model.Name }) && model.present(previous) {
+				models = append(models, model)
+			}
+		}
+	}
+	pins := m.catalog().withModels(models)
+	if previous != nil {
 		if err := verify(ctx, previous, pins); err == nil {
 			m.report(Progress{Step: StepCompatibility})
-			installed := paths(previous.Name())
+			installed := paths(previous.Name(), models)
 			if _, err := m.nativeChecks(ctx, installed); err != nil {
 				return Installation{}, err
 			}
@@ -306,7 +372,7 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 		return Installation{}, err
 	}
 	m.report(Progress{Step: StepCompatibility})
-	if _, err := m.nativeChecks(ctx, paths(stageDir)); err != nil {
+	if _, err := m.nativeChecks(ctx, paths(stageDir, models)); err != nil {
 		return Installation{}, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -332,7 +398,7 @@ func (m Manager) Install(ctx context.Context) (_ Installation, err error) {
 	// Best effort: the new installation is already active.
 	root.RemoveAll(downloadsDir)
 	pruneGenerations(root, keep)
-	return paths(filepath.Join(dir, generation)), nil
+	return paths(filepath.Join(dir, generation), models), nil
 }
 
 // downloadsDir holds verified and partial downloads between setup attempts.

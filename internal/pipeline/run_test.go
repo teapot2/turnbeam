@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/alignment"
+	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/diarization"
 	"github.com/teapot2/turnbeam/internal/jobs"
@@ -49,12 +51,22 @@ type fakeDiarizer struct {
 	fail  error
 }
 
-func (f *fakeDiarizer) Diarize(context.Context, *media.Prepared) (*diarization.Result, error) {
+// Diarize returns the fixture RTTM and, like the real adapter, its parsed timeline.
+func (f *fakeDiarizer) Diarize(ctx context.Context, recording *media.Prepared) (*diarization.Result, error) {
 	f.calls++
 	if f.fail != nil {
 		return nil, f.fail
 	}
-	return &diarization.Result{RTTMPath: f.path, RuntimeVersion: setup.RuntimeVersion, ModelRevision: setup.ModelRevision}, nil
+	raw, err := os.Open(f.path)
+	if err != nil {
+		return nil, err
+	}
+	defer raw.Close()
+	timeline, err := diarization.ParseRTTM(ctx, raw, "recording", recording.Duration)
+	if err != nil {
+		return nil, err
+	}
+	return &diarization.Result{Timeline: timeline, RTTMPath: f.path, RuntimeVersion: setup.RuntimeVersion, ModelRevision: setup.ModelRevision}, nil
 }
 
 type fakeCredentials struct {
@@ -306,5 +318,99 @@ func TestResumeRejectsChangedNormalizedAudio(t *testing.T) {
 	}
 	if _, statErr := os.Stat(out); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatal("a transcript was published for mismatched audio")
+	}
+}
+
+type fakeRecognizer struct {
+	calls int
+	model string
+	words []asr.Word
+	fail  error
+}
+
+func (f *fakeRecognizer) Transcribe(_ context.Context, _ *media.Prepared, model setup.LocalModel) ([]asr.Word, error) {
+	f.calls++
+	f.model = model.Name
+	return f.words, f.fail
+}
+
+func localFixture(t *testing.T) (*fixture, *fakeRecognizer) {
+	t.Helper()
+	f := newFixture(t)
+	recognizer := &fakeRecognizer{words: []asr.Word{{Text: "Hello.", Start: 200 * time.Millisecond, End: 800 * time.Millisecond}}}
+	f.runner.Transcriber = recognizer
+	return f, recognizer
+}
+
+func TestLocalModelsNeedNoKeyMetaOrCache(t *testing.T) {
+	f, recognizer := localFixture(t)
+	var stdout, stderr bytes.Buffer
+	if err := f.runner.Run(context.Background(), f.input, Options{Model: "parakeet"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "[00:00:00.200] **Speaker 1:** Hello.\n" {
+		t.Fatalf("stdout: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "==> Preparing audio\n    1s of audio\n==> Transcribing (on device)\n    1 word\n==> Finding speakers (on device)\n    1 speaker\n==> Matching words to speakers\n") || strings.Contains(stderr.String(), "Hello") {
+		t.Fatalf("stderr: %s", stderr.String())
+	}
+	if recognizer.calls != 1 || recognizer.model != "parakeet" || f.diarizer.calls != 1 || f.auth.calls != 0 || f.calls != 0 || f.media.detect != 0 {
+		t.Fatalf("stages: recognizer %d, diarizer %d, key %d, Meta %d, silence %d", recognizer.calls, f.diarizer.calls, f.auth.calls, f.calls, f.media.detect)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "jobs")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local run wrote a checkpoint: %v", err)
+	}
+
+	stdout.Reset()
+	opts := Options{Model: "nemotron-3.5", Render: transcript.RenderOptions{Format: transcript.FormatJSON}}
+	if err := f.runner.Run(context.Background(), f.input, opts, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := transcript.Decode(stdout.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Pipeline
+	nemotron, _ := setup.FindLocalModel("nemotron-3.5")
+	if recognizer.model != "nemotron-3.5" || p.Engine != transcript.EngineLocal || p.ASRModel != nemotron.File || p.ASRRevision != nemotron.Revision || p.MetaModel != "" || p.DiarizationRevision != setup.ModelRevision || len(doc.SourceChunks) != 0 {
+		t.Fatalf("local provenance: %+v", doc)
+	}
+}
+
+func TestLocalModelFailures(t *testing.T) {
+	ctx := context.Background()
+	f, recognizer := localFixture(t)
+	for _, opts := range []Options{{Model: "parakeet", Resume: true}, {Model: "parakeet", Fresh: true}, {Model: "whisper"}} {
+		if err := f.runner.Run(ctx, f.input, opts, io.Discard, io.Discard); err == nil {
+			t.Fatalf("invalid options accepted: %+v", opts)
+		}
+	}
+	if f.media.prepare != 0 || recognizer.calls != 0 {
+		t.Fatal("invalid options reached processing")
+	}
+
+	recognizer.fail = &setup.ModelError{Name: "parakeet", Err: os.ErrNotExist}
+	var stdout bytes.Buffer
+	if err := f.runner.Run(ctx, f.input, Options{Model: "parakeet"}, &stdout, io.Discard); !errors.Is(err, setup.ErrLocalModel) {
+		t.Fatalf("missing local model: %v", err)
+	}
+	if f.diarizer.calls != 0 || stdout.Len() != 0 {
+		t.Fatal("diarization ran or output was written after transcription failed")
+	}
+
+	recognizer.fail = nil
+	f.diarizer.fail = diarization.ErrRTTM
+	output := filepath.Join(f.dir, "meeting.md")
+	if err := f.runner.Run(ctx, f.input, Options{Model: "parakeet", Output: output}, io.Discard, io.Discard); !errors.Is(err, diarization.ErrRTTM) {
+		t.Fatalf("diarization failure: %v", err)
+	}
+	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("incomplete local run published output")
+	}
+
+	f.diarizer.fail = nil
+	recognizer.words = []asr.Word{{Text: "late", Start: 900 * time.Millisecond, End: 2 * time.Second}}
+	if err := f.runner.Run(ctx, f.input, Options{Model: "parakeet"}, io.Discard, io.Discard); !errors.Is(err, alignment.ErrAlignment) {
+		t.Fatalf("word past the recording accepted: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/teapot2/turnbeam/internal/pipeline"
 	"github.com/teapot2/turnbeam/internal/progress"
+	"github.com/teapot2/turnbeam/internal/setup"
 
 	"github.com/spf13/cobra"
 )
@@ -46,6 +47,11 @@ func Run(ctx context.Context, args []string, version string, stdout, stderr io.W
 		name := ""
 		if cmd != nil {
 			name = cmd.Name()
+			if model, _ := cmd.Flags().GetString("model"); name == "turnbeam" {
+				if _, local := setup.FindLocalModel(model); local {
+					name = "turnbeam (local model)"
+				}
+			}
 		}
 		var message string
 		code, message = reportFailure(ctx, err, code, name)
@@ -63,10 +69,12 @@ func newRootWithTranscriber(version string, code *int, stdout io.Writer, run tra
 		Use:   "turnbeam <recording>",
 		Short: "Transcribe a prerecorded meeting",
 		Long: "Turnbeam transcribes a meeting recording and labels who spoke when.\n" +
-			"Meta Muse transcribes the audio; speakers are identified locally on your Mac.",
+			"Meta Muse transcribes the audio, or a model on your Mac with --model;\n" +
+			"speakers are always identified locally on your Mac.",
 		Example: "  turnbeam meeting.mp4 -o meeting.md\n" +
 			"  turnbeam meeting.mp4 -f text --timestamps range > meeting.txt\n" +
-			"  turnbeam meeting.mp4 -o meeting.md --resume",
+			"  turnbeam meeting.mp4 -o meeting.md --resume\n" +
+			"  turnbeam meeting.mp4 -o meeting.md --model parakeet",
 		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -85,7 +93,7 @@ func newRootWithTranscriber(version string, code *int, stdout io.Writer, run tra
 			*code = exitFailed
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			verbose, _ := cmd.Flags().GetBool("verbose")
-			options := pipeline.Options{Mode: opts.mode, Concurrency: opts.concurrency, Resume: opts.resume, Fresh: opts.fresh, Output: opts.output, InstallDir: opts.installDir}
+			options := pipeline.Options{Model: opts.model, Mode: opts.mode, Concurrency: opts.concurrency, Resume: opts.resume, Fresh: opts.fresh, Output: opts.output, InstallDir: opts.installDir}
 			options.Render = opts.render()
 			options.Progress.Quiet, options.Progress.Verbose = quiet, verbose
 			return run(cmd.Context(), args[0], options, stdout, cmd.ErrOrStderr())

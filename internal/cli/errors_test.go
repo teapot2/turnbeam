@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/filelock"
 	"github.com/teapot2/turnbeam/internal/jobs"
@@ -29,6 +30,7 @@ func TestErrorClassesDoNotPrintUntrustedCauses(t *testing.T) {
 		{credentials.ErrMissing, configuration}, {pipeline.ErrInput, configuration}, {jobs.ErrCorrupt, configuration},
 		{setup.ErrNotReady, dependency}, {subprocess.ErrStart, dependency},
 		{setup.ErrDownload, remote}, {setup.ErrUnsafeDirectory, configuration},
+		{asr.ErrOutput, processing}, {asr.ErrCleanup, storage},
 		{errors.Join(credentials.ErrNoKeyEntered, io.EOF), configuration},
 		{fmt.Errorf("%w (OSStatus -25293)", credentials.ErrKeychain), dependency},
 		{errors.Join(meta.ErrRetryLater, &meta.Error{Kind: meta.ErrHTTP, StatusCode: 429}), remote},
@@ -77,13 +79,28 @@ func TestUsageRedactionAndSingleLineDiagnostics(t *testing.T) {
 	}
 }
 
+func TestMissingLocalModelSaysHowToInstallIt(t *testing.T) {
+	err := fmt.Errorf("prepare local transcription: %w", errors.Join(setup.ErrNotReady, &setup.ModelError{Name: "parakeet", Err: setup.ErrIntegrity}))
+	if _, message := reportFailure(context.Background(), err, 1, "turnbeam"); !strings.Contains(message, "turnbeam setup --model parakeet") || !strings.HasPrefix(message, "dependency:") {
+		t.Fatalf("diagnostic does not name the fix: %q", message)
+	}
+}
+
+func TestDoctorSummaryWinsOverModelErrors(t *testing.T) {
+	err := errors.Join(setup.ErrDoctorFailed, errors.New("ffmpeg missing"), &setup.ModelError{Name: "parakeet", Err: setup.ErrIntegrity})
+	if _, message := reportFailure(context.Background(), err, 1, "doctor"); !strings.Contains(message, setup.ErrDoctorFailed.Error()) {
+		t.Fatalf("doctor summary lost: %q", message)
+	}
+}
+
 func TestCancellationTellsHowToContinue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	for command, want := range map[string]string{
-		"turnbeam": "run the same command with --resume to continue",
-		"setup":    "run `turnbeam setup` again to resume the download",
-		"export":   "canceled",
+		"turnbeam":               "run the same command with --resume to continue",
+		"setup":                  "run `turnbeam setup` again to resume the download",
+		"export":                 "canceled",
+		"turnbeam (local model)": "run the same command again to start over",
 	} {
 		if code, message := reportFailure(ctx, context.Canceled, 1, command); code != exitCanceled || !strings.HasSuffix(message, want) {
 			t.Fatalf("%s: code %d, %q", command, code, message)

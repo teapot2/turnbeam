@@ -41,6 +41,17 @@ func assetTitle(name string) string {
 	case "MODEL-LICENSE":
 		return "OpenMDW-1.1 model license"
 	}
+	for _, model := range pinnedModels() {
+		switch name {
+		case model.assets[0].name:
+			return model.Title + " speech recognition model, Q8_0 (" + model.License + ")"
+		case model.assets[1].name:
+			return model.Title + " model card"
+		}
+		if len(model.assets) > 2 && name == model.assets[2].name {
+			return model.License + " model license"
+		}
+	}
 	return name
 }
 

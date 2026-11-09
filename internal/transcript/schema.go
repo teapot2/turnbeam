@@ -1,8 +1,17 @@
 // Package transcript defines the canonical, versioned meeting transcript.
 package transcript
 
-// SchemaVersion is the only canonical schema supported by this implementation.
-const SchemaVersion = 1
+// SchemaVersion is the canonical schema this implementation writes. Version 1
+// sidecars, which predate the engine field, still decode, validate and re-encode
+// as version 1.
+const SchemaVersion = 2
+
+// Engines recorded in pipeline.engine from schema version 2. Version 1 sidecars
+// have no engine field and are always Meta transcripts.
+const (
+	EngineMeta  = "meta"
+	EngineLocal = "local"
+)
 
 // AttributionStatus says whether a turn has a recording-wide speaker.
 type AttributionStatus string
@@ -15,8 +24,13 @@ const (
 // AttributionMethod is the evidence behind an Assigned turn.
 type AttributionMethod string
 
-// TimelineOverlap uses the global diarization timeline.
-const TimelineOverlap AttributionMethod = "timeline_overlap"
+const (
+	// TimelineOverlap judges a whole Meta turn against the global diarization timeline.
+	TimelineOverlap AttributionMethod = "timeline_overlap"
+	// WordTimelineOverlap judges each locally recognized word against the global
+	// diarization timeline; a turn joins consecutive words with the same outcome.
+	WordTimelineOverlap AttributionMethod = "word_timeline_overlap"
+)
 
 // AttributionReason explains why a turn is Unknown.
 type AttributionReason string
@@ -49,9 +63,14 @@ type Recording struct {
 }
 
 // Pipeline records inference provenance, independently of display settings.
+// Meta transcripts carry the Meta model and mode; local ones the local speech
+// recognition model and its revision. Both carry the diarization provenance.
 type Pipeline struct {
-	MetaModel           string `json:"metaModel"`
-	MetaMode            string `json:"metaMode"`
+	Engine              string `json:"engine,omitempty"`
+	MetaModel           string `json:"metaModel,omitempty"`
+	MetaMode            string `json:"metaMode,omitempty"`
+	ASRModel            string `json:"asrModel,omitempty"`
+	ASRRevision         string `json:"asrRevision,omitempty"`
 	DiarizationModel    string `json:"diarizationModel"`
 	DiarizationRevision string `json:"diarizationRevision"`
 	RuntimeVersion      string `json:"runtimeVersion"`
@@ -66,6 +85,7 @@ type Speaker struct {
 
 // Turn uses original-recording milliseconds, never display-formatted timestamps.
 // A zero-duration text turn retains its source timing and must remain Unknown.
+// Local-engine turns have no Meta source, so Source is omitted for them.
 type Turn struct {
 	ID          string      `json:"id"`
 	StartMS     int64       `json:"startMs"`
@@ -73,7 +93,7 @@ type Turn struct {
 	Text        string      `json:"text"`
 	SpeakerID   *string     `json:"speakerId"`
 	Attribution Attribution `json:"attribution"`
-	Source      Source      `json:"source"`
+	Source      Source      `json:"source,omitzero"`
 }
 
 // Attribution separates global identity evidence from request-local Meta labels.

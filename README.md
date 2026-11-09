@@ -37,12 +37,16 @@ guessed.
 5. **Assemble:** turns go back on the original timeline and get a speaker only
    when the speaker timeline clearly supports it.
 
+With a local `--model`, a model on your Mac transcribes the whole recording
+instead (steps 3–4), and each word gets a speaker on its own.
+
 ## Requirements
 
 - A Mac with Apple Silicon.
 - Go 1.27+ and the Xcode Command Line Tools (cgo is used for Keychain).
 - `ffmpeg` and `ffprobe` on your `PATH`.
-- A Meta API key, and permission to send the recording to Meta.
+- A Meta API key, and permission to send the recording to Meta (not needed
+  with a local model).
 
 ## Install
 
@@ -101,6 +105,27 @@ subtitles. `turnbeam --help` lists all options. Keep the default `--mode
 diarization`: `--mode endpointing` splits turns at pauses regardless of who is
 talking, so far fewer of them get a speaker.
 
+## Transcribe on your Mac
+
+```sh
+turnbeam models                                          # list models and their status
+turnbeam setup --model parakeet                          # download one (714 MB)
+turnbeam meeting.mp4 --output meeting.md --model parakeet
+```
+
+Local models upload nothing, need no key and cost nothing. Install as many as
+you like; `--model` picks one per run, and `TURNBEAM_MODEL=parakeet` makes it
+the default. Local runs are not checkpointed, so `--resume` does not apply.
+
+| Model | Runs | Languages | On the AMI calibration meeting |
+| --- | --- | --- | --- |
+| `meta` (default) | Meta API | many | 27% word errors; 65% of words with the right speaker, 1.9% wrong |
+| `parakeet` | on device, under 1 min for 21 min of audio | 25 European | 26% word errors; 76% right, 1.5% wrong |
+| `nemotron-3.5` | on device, about 2 min | multilingual, incl. Chinese, Japanese, Hindi, Arabic | 30% word errors; 75% right, 1.5% wrong |
+
+Nemotron 3.5 reports words about 0.4 s after they were spoken, so Turnbeam moves
+its word times 300 ms earlier, an offset measured on that meeting.
+
 ## Resume, rename and export
 
 ```sh
@@ -118,7 +143,8 @@ Exit codes: `0` success, `1` failure, `2` invalid usage, `130` canceled.
 ## Privacy
 
 - Meta receives only the audio chunks, with your API key for authentication.
-  Transcripts, speaker labels and file names stay on your Mac.
+  Transcripts, speaker labels and file names stay on your Mac. With
+  a local model, nothing leaves your Mac.
 - Speaker labels are model guesses, not verified identities, and at most eight
   speakers are distinguished.
 - Checkpoints in `~/Library/Caches/turnbeam/jobs` contain transcript text and
@@ -153,5 +179,6 @@ Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 ## License
 
 [MIT](LICENSE). Components that `setup` downloads keep their own licenses, and
-their notices are installed with them: NeMo-Speech.cpp is Apache-2.0 and the
-Nemotron 3 model is OpenMDW-1.1.
+their notices are installed with them: NeMo-Speech.cpp is Apache-2.0, the
+Nemotron 3 and Nemotron 3.5 models are OpenMDW-1.1, and the Parakeet TDT v3
+model is CC-BY-4.0.

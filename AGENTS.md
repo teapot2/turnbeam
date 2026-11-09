@@ -1,6 +1,6 @@
 # Turnbeam
 
-Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare media, Meta Muse transcribes, and NeMo-Speech.cpp/Nemotron 3 diarizes the recording.
+Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare media, Meta Muse or a pinned on-device model (`--model`) transcribes, and NeMo-Speech.cpp/Nemotron 3 diarizes the recording.
 
 ## Context and Scope
 - Read available specifications and relevant code before pipeline changes; disclose missing requirements. Read `.codex/private-context.md` if present, but do not require it.
@@ -20,6 +20,7 @@ Go/Cobra CLI for prerecorded meetings on macOS ARM64: FFmpeg/FFprobe prepare med
 - Use focused standard-library tests (`t.TempDir`, `httptest`, subprocess fakes). Default tests must be offline, deterministic, and independent of local data.
 - Optional native media checks: `TURNBEAM_TEST_NATIVE_MEDIA=1 go test ./internal/media -run TestNativeMedia` (FFmpeg/FFprobe required; generated local media only).
 - Optional local pipeline checks: `TURNBEAM_TEST_NATIVE_PIPELINE=1 go test ./internal/pipeline -run TestNativePipeline -v` (installed FFmpeg and managed Metal runtime/model required; generated MP4 by default, optional `TURNBEAM_NATIVE_AUDIO`/`TURNBEAM_NATIVE_INSTALL_DIR`; transcription is always mocked locally).
+- Optional local model checks: `TURNBEAM_TEST_NATIVE_PIPELINE=1 go test ./internal/pipeline -run TestNativeLocalModels -v` (FFmpeg, macOS `say` and at least one model from `turnbeam setup --model NAME` required; speech is synthesized locally, optional `TURNBEAM_NATIVE_AUDIO`/`TURNBEAM_NATIVE_INSTALL_DIR`).
 - Optional archived API checks: `TURNBEAM_TEST_LOCAL_FIXTURES=1 go test ./internal/meta -run TestLocalCaptures` (local, ignored `testdata/meta/` required; no API calls).
 - Cover affected malformed responses, retries, cancellation, timestamp boundaries, ambiguous speakers, checkpoint mismatches, and partial writes.
 - Review the diff; preserve unrelated work. Report checks, missing prerequisites, failures, and remaining live-service/native-hardware validation. Distinguish proposed, mock-tested, and real behavior.

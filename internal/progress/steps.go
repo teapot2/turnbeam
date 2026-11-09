@@ -22,6 +22,10 @@ const (
 	Assemble
 	Align
 	Write
+	// TranscribeLocal and AlignWords replace Chunk, Transcribe, Assemble and
+	// Align when the local engine transcribes the whole recording on device.
+	TranscribeLocal
+	AlignWords
 )
 
 var stages = [...]string{
@@ -33,6 +37,9 @@ var stages = [...]string{
 	Assemble:   "Assembling transcript",
 	Align:      "Matching turns to speakers",
 	Write:      "Writing transcript",
+	// Labels stay within labelWidth so step details line up.
+	TranscribeLocal: "Transcribing (on device)",
+	AlignWords:      "Matching words to speakers",
 }
 
 const (
@@ -80,6 +87,15 @@ func (r *Reporter) SpeakersFound(speakers int) {
 		text = "no speech found"
 	}
 	r.setResult(Diarize, speakers >= 0, text)
+}
+
+// WordsTranscribed records how many words the local model recognized.
+func (r *Reporter) WordsTranscribed(words int) {
+	text := count(words, "word")
+	if words == 0 {
+		text = "no speech found"
+	}
+	r.setResult(TranscribeLocal, words >= 0, text)
 }
 
 // ChunksPlanned records how many chunks the recording was split into.

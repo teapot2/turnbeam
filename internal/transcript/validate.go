@@ -29,7 +29,7 @@ func Validate(t *Transcript) error {
 	if t == nil {
 		return invalid("transcript", "must not be null")
 	}
-	if t.SchemaVersion != SchemaVersion {
+	if t.SchemaVersion != 1 && t.SchemaVersion != SchemaVersion {
 		return versionError(t.SchemaVersion)
 	}
 	r := t.Recording
@@ -42,15 +42,19 @@ func Validate(t *Transcript) error {
 	if digest, err := hex.DecodeString(r.SHA256); err != nil || len(digest) != 32 || hex.EncodeToString(digest) != r.SHA256 {
 		return invalid("recording.sha256", "must be a lowercase SHA-256 hex digest")
 	}
-	p := t.Pipeline
-	if !text(p.MetaModel) || !text(p.DiarizationModel) || !text(p.DiarizationRevision) || !text(p.RuntimeVersion) {
-		return invalid("pipeline", "model, revision and runtime provenance are required")
-	}
-	if p.MetaMode != "DIARIZATION" && p.MetaMode != "ENDPOINTING" {
-		return invalid("pipeline.metaMode", "must be DIARIZATION or ENDPOINTING")
+	local, err := validatePipeline(t.SchemaVersion, t.Pipeline)
+	if err != nil {
+		return err
 	}
 	if t.Speakers == nil || t.Turns == nil || t.SourceChunks == nil {
 		return invalid("transcript", "speakers, turns and sourceChunks must be arrays, not null")
+	}
+	if local && len(t.SourceChunks) != 0 {
+		return invalid("sourceChunks", "must be empty for the local engine")
+	}
+	method := TimelineOverlap
+	if local {
+		method = WordTimelineOverlap
 	}
 	speakers := make(map[string]bool, len(t.Speakers))
 	for i, s := range t.Speakers {
@@ -111,6 +115,15 @@ func Validate(t *Transcript) error {
 		if i > 0 && turn.StartMS < t.Turns[i-1].StartMS {
 			return invalid(field, "turns must be in start-time order")
 		}
+		if err := validateAttribution(field, turn, speakers, method); err != nil {
+			return err
+		}
+		if local {
+			if turn.Source != (Source{}) {
+				return invalid(field+".source", "local-engine turns have no Meta source")
+			}
+			continue
+		}
 		c, exists := chunks[turn.Source.ChunkID]
 		raw, found := rawTurns[turn.Source.ChunkID][turn.Source.MetaTurnID]
 		if !exists || !found {
@@ -127,22 +140,51 @@ func Validate(t *Transcript) error {
 		if turn.StartMS < c.StartMS || turn.StartMS-c.StartMS != raw.StartMS || turn.EndMS-c.StartMS != raw.EndMS {
 			return invalid(field+".source", "canonical timestamps must equal raw timestamps plus the chunk offset")
 		}
-		if err := validateAttribution(field, turn, speakers); err != nil {
-			return err
-		}
 	}
 	return nil
 }
 
-func validateAttribution(field string, turn Turn, speakers map[string]bool) error {
+// validatePipeline checks provenance and reports whether the transcript comes
+// from the local engine. Version 1 has no engine field and is always Meta.
+func validatePipeline(version int, p Pipeline) (local bool, err error) {
+	if !text(p.DiarizationModel) || !text(p.DiarizationRevision) || !text(p.RuntimeVersion) {
+		return false, invalid("pipeline", "model, revision and runtime provenance are required")
+	}
+	switch {
+	case version == 1 && p.Engine == "", version != 1 && p.Engine == EngineMeta:
+		if !text(p.MetaModel) {
+			return false, invalid("pipeline", "model, revision and runtime provenance are required")
+		}
+		if p.MetaMode != "DIARIZATION" && p.MetaMode != "ENDPOINTING" {
+			return false, invalid("pipeline.metaMode", "must be DIARIZATION or ENDPOINTING")
+		}
+		if p.ASRModel != "" || p.ASRRevision != "" {
+			return false, invalid("pipeline", "local model provenance belongs only to the local engine")
+		}
+		return false, nil
+	case version != 1 && p.Engine == EngineLocal:
+		if !text(p.ASRModel) || !text(p.ASRRevision) {
+			return false, invalid("pipeline", "local model and revision provenance are required")
+		}
+		if p.MetaModel != "" || p.MetaMode != "" {
+			return false, invalid("pipeline", "Meta provenance belongs only to the Meta engine")
+		}
+		return true, nil
+	case version == 1:
+		return false, invalid("pipeline.engine", "requires schema version 2")
+	}
+	return false, invalid("pipeline.engine", "must be meta or local")
+}
+
+func validateAttribution(field string, turn Turn, speakers map[string]bool, method AttributionMethod) error {
 	a := turn.Attribution
 	if turn.StartMS == turn.EndMS && a.Status != Unknown {
 		return invalid(field+".attribution", "zero-duration text must remain unknown")
 	}
 	switch a.Status {
 	case Assigned:
-		if turn.SpeakerID == nil || !speakers[*turn.SpeakerID] || a.Method != TimelineOverlap || a.Reason != "" || len(a.CandidateSpeakerIDs) != 0 {
-			return invalid(field+".attribution", "assigned turns require a global speaker and timeline_overlap method, without unknown metadata")
+		if turn.SpeakerID == nil || !speakers[*turn.SpeakerID] || a.Method != method || a.Reason != "" || len(a.CandidateSpeakerIDs) != 0 {
+			return invalid(field+".attribution", "assigned turns require a global speaker and the engine's overlap method, without unknown metadata")
 		}
 	case Unknown:
 		if turn.SpeakerID != nil || !slices.Contains(reasons, a.Reason) || a.Method != "" {

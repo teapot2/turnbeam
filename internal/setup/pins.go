@@ -12,9 +12,21 @@ type artifact struct {
 	size              int64
 }
 
+// catalog lists the required assets and the optional local models.
 type catalog struct {
 	assets []artifact
+	models []LocalModel
 	prefix string
+}
+
+// model finds an optional local model by its CLI name.
+func (c catalog) model(name string) (LocalModel, bool) {
+	for _, m := range c.models {
+		if m.Name == name {
+			return m, true
+		}
+	}
+	return LocalModel{}, false
 }
 
 func pinnedCatalog() catalog {
@@ -26,5 +38,6 @@ func pinnedCatalog() catalog {
 			{"MODEL-CARD.md", "https://huggingface.co/nvidia/Nemotron-3-Diarization/resolve/" + ModelRevision + "/README.md", "5fe88ca4020d2ee134f806a0a02c52c19855b73047bc2e6f25b9171e1abeebfd", 43239},
 			{"MODEL-LICENSE", "https://raw.githubusercontent.com/OpenMDW/OpenMDW/9067ba54b2f84bc9e15a05734f570ec88e9f445d/1.1/LICENSE.OpenMDW-1.1", "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df", 2619},
 		},
+		models: pinnedModels(),
 	}
 }

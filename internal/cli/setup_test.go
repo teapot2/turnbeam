@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,7 +38,7 @@ func TestSetupDiagnosticFailuresDoNotLookSuccessful(t *testing.T) {
 			}
 		}
 		service := &fakeSetup{checks: []setup.Check{{Name: "platform", OK: true, Message: "supported"}}}
-		addSetupCommands(root, &code, func(string, func(setup.Progress)) setupService { return service }, storedKey)
+		addSetupCommands(root, &code, func(string, []string, func(setup.Progress)) setupService { return service }, storedKey)
 		root.SetErr(failedDiagnostics{})
 		root.SetArgs([]string{name})
 		if err := root.ExecuteContext(context.Background()); !errors.Is(err, io.ErrClosedPipe) || code != 1 {
@@ -59,6 +60,15 @@ func (f *fakeSetup) Doctor(ctx context.Context) ([]setup.Check, error) {
 	return f.checks, f.doctorErr
 }
 
+func (f *fakeSetup) LocalStatus(ctx context.Context) ([]setup.ModelStatus, error) {
+	f.ctx = ctx
+	var statuses []setup.ModelStatus
+	for i, model := range setup.LocalModels() {
+		statuses = append(statuses, setup.ModelStatus{Model: model, Installed: i == 0})
+	}
+	return statuses, f.doctorErr
+}
+
 func TestSetupAndDoctorCommands(t *testing.T) {
 	for _, test := range []struct {
 		args []string
@@ -68,6 +78,8 @@ func TestSetupAndDoctorCommands(t *testing.T) {
 		{[]string{"setup", "--install-dir", "custom-install", "--verbose"}, false},
 		{[]string{"setup", "--quiet"}, false},
 		{[]string{"setup", "--quiet"}, true},
+		{[]string{"setup", "--model", "parakeet"}, false},
+		{[]string{"setup", "--model", "parakeet,nemotron-3.5"}, false},
 		{[]string{"doctor"}, false},
 		{[]string{"doctor", "--install-dir", "custom-install", "--quiet"}, true},
 	} {
@@ -85,9 +97,9 @@ func TestSetupAndDoctorCommands(t *testing.T) {
 					root.RemoveCommand(command)
 				}
 			}
-			selectedDir := ""
-			addSetupCommands(root, &code, func(dir string, _ func(setup.Progress)) setupService {
-				selectedDir = dir
+			selectedDir, selectedModels := "", []string(nil)
+			addSetupCommands(root, &code, func(dir string, models []string, _ func(setup.Progress)) setupService {
+				selectedDir, selectedModels = dir, models
 				return service
 			}, storedKey)
 			var stdout, stderr bytes.Buffer
@@ -99,6 +111,12 @@ func TestSetupAndDoctorCommands(t *testing.T) {
 			err := root.ExecuteContext(ctx)
 			if (err != nil) != test.fail || code != 1 || service.ctx != ctx || stdout.Len() != 0 {
 				t.Fatalf("wrong execution/output: code=%d stdout=%q stderr=%q err=%v", code, stdout.String(), stderr.String(), err)
+			}
+			if i := slices.Index(test.args, "--model"); i >= 0 && strings.Join(selectedModels, ",") != test.args[i+1] {
+				t.Fatalf("--model forwarded as %v", selectedModels)
+			}
+			if test.args[0] == "setup" && !test.fail && !strings.Contains(strings.Join(test.args, " "), "--quiet") && strings.Contains(stderr.String(), "--model parakeet`") != (len(selectedModels) > 0) {
+				t.Fatalf("setup message ignores --model: %q", stderr.String())
 			}
 			if strings.Contains(strings.Join(test.args, " "), "--install-dir") && selectedDir != "custom-install" {
 				t.Fatalf("install directory not forwarded: %q", selectedDir)
@@ -145,7 +163,7 @@ func TestSetupShowsProgressUnlessQuiet(t *testing.T) {
 			}
 		}
 		service := &progressSetup{}
-		addSetupCommands(root, &code, func(_ string, report func(setup.Progress)) setupService {
+		addSetupCommands(root, &code, func(_ string, _ []string, report func(setup.Progress)) setupService {
 			service.report = report
 			return service
 		}, storedKey)

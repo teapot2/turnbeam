@@ -50,10 +50,19 @@ func TestKeyCheck(t *testing.T) {
 	} {
 		check := keyCheck(context.Background(), func(context.Context) (credentials.Source, bool, error) {
 			return tc.source, tc.available, tc.err
-		})
+		}, false)
 		if check.OK != tc.ok || !strings.Contains(check.Fix, tc.fix) || check.Name != "Meta API key" {
 			t.Fatalf("key check for %+v = %+v", tc, check)
 		}
+	}
+	// With a local model installed, Turnbeam can transcribe without a key.
+	missing := func(context.Context) (credentials.Source, bool, error) { return "", false, nil }
+	if check := keyCheck(context.Background(), missing, true); !check.OK || !strings.Contains(check.Message, "only --model meta") {
+		t.Fatalf("missing key failed doctor despite a local model: %+v", check)
+	}
+	locked := func(context.Context) (credentials.Source, bool, error) { return "", false, errors.New("locked") }
+	if check := keyCheck(context.Background(), locked, true); check.OK {
+		t.Fatal("an unreadable keychain must still fail")
 	}
 }
 
@@ -67,7 +76,7 @@ func TestDoctorFailsWithoutAPIKey(t *testing.T) {
 	}
 	service := &fakeSetup{checks: []setup.Check{{Name: "Platform", Message: "macOS on Apple Silicon", OK: true}}}
 	missing := func(context.Context) (credentials.Source, bool, error) { return "", false, nil }
-	addSetupCommands(root, &code, func(string, func(setup.Progress)) setupService { return service }, missing)
+	addSetupCommands(root, &code, func(string, []string, func(setup.Progress)) setupService { return service }, missing)
 	var stderr bytes.Buffer
 	root.SetErr(&stderr)
 	root.SetArgs([]string{"doctor"})
@@ -78,5 +87,11 @@ func TestDoctorFailsWithoutAPIKey(t *testing.T) {
 	got := stderr.String()
 	if !strings.Contains(got, "FAIL Meta API key") || !strings.Contains(got, "-> run `turnbeam key set`") || strings.Contains(got, "Ready to transcribe") {
 		t.Fatalf("doctor output: %q", got)
+	}
+
+	service.checks = append(service.checks, setup.Check{Name: "Local model", Message: "parakeet: Parakeet TDT v3 Q8_0", OK: true, LocalModel: "parakeet"})
+	stderr.Reset()
+	if err := root.ExecuteContext(context.Background()); err != nil || !strings.Contains(stderr.String(), "Ready to transcribe") {
+		t.Fatalf("doctor with a local model and no key: %v, %q", err, stderr.String())
 	}
 }

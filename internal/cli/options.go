@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/teapot2/turnbeam/internal/meta"
+	"github.com/teapot2/turnbeam/internal/pipeline"
+	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
 
 	"github.com/spf13/cobra"
@@ -63,6 +65,7 @@ func (o *outputOptions) validate(cmd *cobra.Command) error {
 
 type transcribeOptions struct {
 	outputOptions
+	model       string
 	mode        string
 	concurrency int
 	resume      bool
@@ -72,10 +75,12 @@ type transcribeOptions struct {
 
 func (o *transcribeOptions) addFlags(cmd *cobra.Command) {
 	o.outputOptions.addFlags(cmd)
+	cmd.Flags().StringVar(&o.model, "model", defaultModel(), "Transcription model `name`: meta (Meta Muse), or "+strings.Join(modelNames()[1:], " or ")+" on your Mac (see turnbeam models); "+modelEnv+" sets the default")
 	cmd.Flags().StringVar(&o.mode, "mode", "diarization", "Meta mode: diarization (best speaker labels), endpointing")
 	cmd.Flags().IntVar(&o.concurrency, "concurrency", meta.DefaultConcurrency, "Maximum concurrent Meta requests")
 	cmd.Flags().BoolVar(&o.resume, "resume", false, "Continue an interrupted run without repeating paid work")
 	cmd.Flags().BoolVar(&o.fresh, "fresh", false, "Start over instead of resuming (repeats paid work)")
+	completeChoices(cmd, "model", modelNames())
 	completeChoices(cmd, "mode", []string{"diarization", "endpointing"})
 	cmd.RegisterFlagCompletionFunc("concurrency", cobra.NoFileCompletions)
 	addInstallDirFlag(cmd, &o.installDir)
@@ -94,7 +99,40 @@ func (o *transcribeOptions) validate(cmd *cobra.Command) error {
 	if o.resume && o.fresh {
 		return fmt.Errorf("--resume and --fresh are mutually exclusive")
 	}
+	if err := choice("model", o.model, modelNames()...); err != nil {
+		if !cmd.Flags().Changed("model") {
+			return fmt.Errorf("%s must be one of: %s", modelEnv, joinChoices(modelNames()))
+		}
+		return err
+	}
+	if _, local := setup.FindLocalModel(o.model); local {
+		for _, flag := range []string{"mode", "concurrency", "resume", "fresh"} {
+			if cmd.Flags().Changed(flag) {
+				return fmt.Errorf("--%s applies only to --model meta; local models use no Meta requests or checkpoints", flag)
+			}
+		}
+	}
 	return validateInstallDir(cmd, o.installDir)
+}
+
+// modelEnv names the environment variable that sets the default --model.
+const modelEnv = "TURNBEAM_MODEL"
+
+// defaultModel is TURNBEAM_MODEL when set, otherwise Meta Muse.
+func defaultModel() string {
+	if model := strings.TrimSpace(os.Getenv(modelEnv)); model != "" {
+		return model
+	}
+	return pipeline.MetaModel
+}
+
+// modelNames lists every --model value: Meta first, then the local models.
+func modelNames() []string {
+	names := []string{pipeline.MetaModel}
+	for _, model := range setup.LocalModels() {
+		names = append(names, model.Name)
+	}
+	return names
 }
 
 func addInstallDirFlag(cmd *cobra.Command, dir *string) {

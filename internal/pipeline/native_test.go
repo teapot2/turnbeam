@@ -11,10 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/diarization"
 	"github.com/teapot2/turnbeam/internal/media"
 	"github.com/teapot2/turnbeam/internal/meta"
@@ -123,4 +125,103 @@ func TestNativePipeline(t *testing.T) {
 	}
 	t.Logf("real local media/Metal; MOCK Meta only: audio_ms=%d wall=%s native_stage=%s real_time_factor=%.6f resume=%s chunks=%d uploaded_bytes=%d speakers=%d intervals=%d end_adjustments=%d runtime=%s model_revision=%s",
 		doc.Recording.DurationMS, elapsed, native.elapsed, elapsed.Seconds()/(float64(doc.Recording.DurationMS)/1000), resumeElapsed, len(doc.SourceChunks), uploaded.Load(), native.speakers, native.segments, native.adjustments, setup.RuntimeVersion, setup.ModelRevision)
+}
+
+// nativeSpeech is synthesized with macOS `say`, so the test needs no recording.
+const nativeSpeech = "Thanks for joining the meeting. Today we will review the budget and the schedule for next quarter."
+
+// This opt-in runs every installed local model through the real pipeline:
+// media, transcription and diarization all run on device and nothing is mocked.
+func TestNativeLocalModels(t *testing.T) {
+	if os.Getenv("TURNBEAM_TEST_NATIVE_PIPELINE") != "1" {
+		t.Skip("set TURNBEAM_TEST_NATIVE_PIPELINE=1 to run installed local models on synthesized speech")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	installDir := os.Getenv("TURNBEAM_NATIVE_INSTALL_DIR")
+	statuses, err := (setup.Manager{Dir: installDir}).LocalStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := os.Getenv("TURNBEAM_NATIVE_AUDIO")
+	if input == "" {
+		input = filepath.Join(t.TempDir(), "speech.aiff")
+		if err := subprocess.Run(ctx, exec.CommandContext(ctx, "say", "-o", input, nativeSpeech)); err != nil {
+			t.Fatal("synthesize speech with say", err)
+		}
+	}
+	ran := 0
+	for _, status := range statuses {
+		if !status.Installed {
+			t.Logf("%s: not installed; run `turnbeam setup --model %s` to include it", status.Model.Name, status.Model.Name)
+			continue
+		}
+		ran++
+		t.Run(status.Model.Name, func(t *testing.T) {
+			model := status.Model
+			mediaDir, asrDir, diarDir, dir := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+			cache := filepath.Join(t.TempDir(), "jobs")
+			guard := errors.New("local models must not need a Meta key")
+			runner := Runner{
+				Media:       media.Processor{TempDir: mediaDir},
+				Transcriber: asr.Adapter{InstallDir: installDir, TempDir: asrDir},
+				Diarizer:    diarization.Adapter{InstallDir: installDir, TempDir: diarDir},
+				Credentials: &fakeCredentials{fail: guard},
+				CacheDir:    cache,
+			}
+			var stdout, stderr bytes.Buffer
+			start := time.Now()
+			if err := runner.Run(ctx, input, Options{Model: model.Name, Output: filepath.Join(dir, "meeting.md"), InstallDir: installDir}, &stdout, &stderr); err != nil {
+				t.Fatal(err, stderr.String())
+			}
+			elapsed := time.Since(start)
+			doc := readCanonical(t, filepath.Join(dir, "meeting.transcript.json"))
+			p := doc.Pipeline
+			if stdout.Len() != 0 || p.Engine != transcript.EngineLocal || p.ASRModel != model.File || p.ASRRevision != model.Revision || p.MetaModel != "" || len(doc.SourceChunks) != 0 {
+				t.Fatalf("local provenance or output contract broken: %+v", p)
+			}
+			var text []string
+			for _, turn := range doc.Turns {
+				text = append(text, turn.Text)
+			}
+			spoken := strings.ToLower(strings.Join(text, " "))
+			heard := 0
+			for _, word := range []string{"meeting", "budget", "schedule", "quarter"} {
+				if strings.Contains(spoken, word) {
+					heard++
+				}
+			}
+			// Synthesized speech is clear; most key words should come through.
+			if heard < 3 {
+				t.Fatalf("recognized too little of the synthesized speech: %q", spoken)
+			}
+			if _, err := os.Stat(cache); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("local run wrote a checkpoint")
+			}
+			for _, path := range []string{mediaDir, asrDir, diarDir} {
+				if entries, err := os.ReadDir(path); err != nil || len(entries) != 0 {
+					t.Fatal("local run left owned temporary data", entries, err)
+				}
+			}
+			if len(doc.Speakers) > 0 {
+				if err := output.Rename(ctx, filepath.Join(dir, "meeting.transcript.json"), map[int]string{1: "Example One"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := output.Export(ctx, filepath.Join(dir, "meeting.transcript.json"), filepath.Join(dir, "meeting.srt"), transcript.RenderOptions{Format: "srt"}, nil); err != nil {
+				t.Fatal(err)
+			}
+			unknown := 0
+			for _, turn := range doc.Turns {
+				if turn.SpeakerID == nil {
+					unknown++
+				}
+			}
+			t.Logf("real local model %s (latency correction %s): audio_ms=%d wall=%s turns=%d unknown=%d speakers=%d text=%q",
+				model.Name, model.Latency, doc.Recording.DurationMS, elapsed, len(doc.Turns), unknown, len(doc.Speakers), spoken)
+		})
+	}
+	if ran == 0 {
+		t.Fatal("no local model is installed; run `turnbeam setup --model parakeet`")
+	}
 }

@@ -7,6 +7,23 @@ minor versions may change the CLI or the transcript JSON schema.
 
 ## [Unreleased]
 
+### Added
+
+- `--model` chooses the transcription model: `meta` (the default), or
+  NVIDIA's `parakeet` (Parakeet TDT 0.6B v3) or `nemotron-3.5` running on your
+  Mac with no API key, no upload and no cost. Each local word is matched to a
+  speaker on its own, with the same rule as Meta turns. `TURNBEAM_MODEL` sets
+  the default.
+- `setup --model NAME` downloads a local model; several can be installed side
+  by side. `turnbeam models` lists every model and whether it is ready, and
+  `doctor` checks installed ones. With a local model installed, a missing Meta
+  key no longer fails `doctor`.
+
+### Changed
+
+- Transcript JSON is now schema version 2, which records the engine in
+  `pipeline.engine`. Version 1 sidecars still rename and export unchanged.
+
 ## [0.1.0] - 2026-11-08
 
 First release, for macOS on Apple Silicon.

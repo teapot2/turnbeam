@@ -4,6 +4,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/teapot2/turnbeam/internal/alignment"
+	"github.com/teapot2/turnbeam/internal/asr"
 	"github.com/teapot2/turnbeam/internal/chunking"
 	"github.com/teapot2/turnbeam/internal/credentials"
 	"github.com/teapot2/turnbeam/internal/diarization"
@@ -20,6 +22,7 @@ import (
 	"github.com/teapot2/turnbeam/internal/meta"
 	"github.com/teapot2/turnbeam/internal/output"
 	"github.com/teapot2/turnbeam/internal/progress"
+	"github.com/teapot2/turnbeam/internal/setup"
 	"github.com/teapot2/turnbeam/internal/transcript"
 )
 
@@ -34,6 +37,12 @@ type diarizer interface {
 type resolver interface {
 	Resolve(context.Context) (string, credentials.Source, error)
 }
+type transcriber interface {
+	Transcribe(context.Context, *media.Prepared, setup.LocalModel) ([]asr.Word, error)
+}
+
+// MetaModel selects Meta Muse transcription in Options.Model.
+const MetaModel = "meta"
 
 // ErrInput identifies an unavailable original recording without echoing its path.
 var ErrInput = errors.New("inspect recording: expected an accessible regular file")
@@ -46,10 +55,15 @@ type Runner struct {
 	Credentials resolver
 	Pool        meta.Pool
 	CacheDir    string
+	// Transcriber recognizes speech on device with a local model.
+	Transcriber transcriber
 }
 
 // Options separates inference/recovery choices from output presentation.
 type Options struct {
+	// Model is MetaModel (the default when empty) or a setup.LocalModel name.
+	// Local models have no Meta mode or concurrency and are not checkpointed.
+	Model         string
 	Mode          string
 	Concurrency   int
 	Resume, Fresh bool
@@ -70,7 +84,9 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 	if mode == "" {
 		mode = meta.Diarization
 	}
-	if opts.Resume && opts.Fresh || opts.Concurrency < 0 || mode != meta.Diarization && mode != meta.Endpointing {
+	local, isLocal := setup.FindLocalModel(opts.Model)
+	if opts.Resume && opts.Fresh || opts.Concurrency < 0 || mode != meta.Diarization && mode != meta.Endpointing ||
+		opts.Model != "" && opts.Model != MetaModel && !isLocal || isLocal && (opts.Resume || opts.Fresh) {
 		return errors.New("invalid pipeline options")
 	}
 	if err := opts.Render.Validate(); err != nil {
@@ -96,7 +112,12 @@ func (r Runner) Run(ctx context.Context, input string, opts Options, stdout, std
 		return err
 	}
 	defer func() { err = errors.Join(err, destination.Close()) }()
-	canonical, err := r.process(ctx, input, mode, opts, reporter)
+	var canonical *transcript.Transcript
+	if isLocal {
+		canonical, err = r.processLocal(ctx, input, local, opts, reporter)
+	} else {
+		canonical, err = r.process(ctx, input, mode, opts, reporter)
+	}
 	if err != nil {
 		return err
 	}
@@ -301,7 +322,7 @@ func (w *invocation) finish(ctx context.Context, settings jobs.Settings, inputHa
 		return nil, err
 	}
 	recording := transcript.Recording{Name: filepath.Base(w.input), DurationMS: timeline.Duration.Milliseconds(), SHA256: inputHash}
-	provenance := transcript.Pipeline{MetaModel: settings.MetaModel, MetaMode: settings.MetaMode, DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}
+	provenance := transcript.Pipeline{Engine: transcript.EngineMeta, MetaModel: settings.MetaModel, MetaMode: settings.MetaMode, DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}
 	canonical, err := alignment.Assemble(ctx, recording, provenance, w.job.Plan(), rows)
 	if err != nil {
 		return nil, err
@@ -310,4 +331,89 @@ func (w *invocation) finish(ctx context.Context, settings jobs.Settings, inputHa
 		return nil, err
 	}
 	return alignment.Align(ctx, canonical, timeline, alignment.DefaultPolicy())
+}
+
+// processLocal transcribes the whole recording on device. Nothing is sent
+// anywhere or checkpointed: a rerun costs only time. Transcription runs before
+// diarization so a missing local model fails before the longer analysis.
+func (r Runner) processLocal(ctx context.Context, input string, model setup.LocalModel, opts Options, reporter *progress.Reporter) (result *transcript.Transcript, err error) {
+	defer func() {
+		if err != nil {
+			result = nil
+		}
+	}()
+	inputHash, err := media.FileSHA256(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprint recording: %w", err)
+	}
+	processor := r.Media
+	if processor == nil {
+		processor = media.Processor{}
+	}
+	if err := reporter.Stage(ctx, progress.Normalize); err != nil {
+		return nil, err
+	}
+	prepared, err := processor.Prepare(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, prepared.Close()) }()
+	if !prepared.ValidTimeline() {
+		return nil, media.ErrInvalidMedia
+	}
+	reporter.AudioPrepared(prepared.Duration)
+
+	if err := reporter.Stage(ctx, progress.TranscribeLocal); err != nil {
+		return nil, err
+	}
+	recognizer := r.Transcriber
+	if recognizer == nil {
+		recognizer = asr.Adapter{InstallDir: opts.InstallDir}
+	}
+	recognized, err := recognizer.Transcribe(ctx, prepared, model)
+	if err != nil {
+		return nil, err
+	}
+	reporter.WordsTranscribed(len(recognized))
+
+	if err := reporter.Stage(ctx, progress.Diarize); err != nil {
+		return nil, err
+	}
+	d := r.Diarizer
+	if d == nil {
+		d = diarization.Adapter{InstallDir: opts.InstallDir}
+	}
+	native, err := d.Diarize(ctx, prepared)
+	if native != nil {
+		err = errors.Join(err, native.Close())
+	}
+	if err != nil {
+		return nil, err
+	}
+	if native == nil {
+		return nil, diarization.ErrRTTM
+	}
+	if native.RuntimeVersion != setup.RuntimeVersion || native.ModelRevision != setup.ModelRevision {
+		return nil, errors.New("diarization result does not match the pinned runtime and model")
+	}
+	timeline := native.Timeline
+	reporter.SpeakersFound(len(timeline.Speakers))
+	if slices.Contains(timeline.Warnings, diarization.SpeakerLimitReached) {
+		if err := reporter.WarnSpeakerLimit(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := reporter.Stage(ctx, progress.AlignWords); err != nil {
+		return nil, err
+	}
+	words := make([]alignment.Word, len(recognized))
+	for i, w := range recognized {
+		words[i] = alignment.Word{Text: w.Text, Start: w.Start, End: w.End}
+	}
+	settings := jobs.DefaultSettings(meta.Diarization)
+	recording := transcript.Recording{Name: filepath.Base(input), DurationMS: timeline.Duration.Milliseconds(), SHA256: inputHash}
+	provenance := transcript.Pipeline{Engine: transcript.EngineLocal, ASRModel: model.File, ASRRevision: model.Revision,
+		DiarizationModel: settings.DiarizationModel, DiarizationRevision: settings.ModelRevision, RuntimeVersion: settings.RuntimeVersion}
+	return alignment.AlignWords(ctx, recording, provenance, words, timeline, alignment.DefaultPolicy())
 }

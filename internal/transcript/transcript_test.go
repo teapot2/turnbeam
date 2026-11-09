@@ -17,7 +17,7 @@ func example() *Transcript {
 		SchemaVersion: SchemaVersion,
 		Recording:     Recording{Name: "meeting.wav", DurationMS: 30000, SHA256: strings.Repeat("ab", 32)},
 		Pipeline: Pipeline{
-			MetaModel: "muse-voice-transcribe-1.0", MetaMode: "DIARIZATION",
+			Engine: EngineMeta, MetaModel: "muse-voice-transcribe-1.0", MetaMode: "DIARIZATION",
 			DiarizationModel: "nemotron-3-diarization", DiarizationRevision: "pinned-revision", RuntimeVersion: "0.3.0",
 		},
 		Speakers: []Speaker{
@@ -205,6 +205,11 @@ func TestInvalidData(t *testing.T) {
 		"short checksum":          func(d *Transcript) { d.Recording.SHA256 = "ab" },
 		"missing provenance":      func(d *Transcript) { d.Pipeline.DiarizationRevision = "" },
 		"bad Meta mode":           func(d *Transcript) { d.Pipeline.MetaMode = "diarization" },
+		"missing engine":          func(d *Transcript) { d.Pipeline.Engine = "" },
+		"unknown engine":          func(d *Transcript) { d.Pipeline.Engine = "whisper" },
+		"local model on Meta":     func(d *Transcript) { d.Pipeline.ASRModel = "nemotron" },
+		"engine in version 1":     func(d *Transcript) { d.SchemaVersion = 1 },
+		"word method on Meta":     func(d *Transcript) { d.Turns[0].Attribution.Method = WordTimelineOverlap },
 		"nil speakers":            func(d *Transcript) { d.Speakers = nil },
 		"nil turns":               func(d *Transcript) { d.Turns = nil },
 		"nil chunks":              func(d *Transcript) { d.SourceChunks = nil },
@@ -307,7 +312,7 @@ func TestMalformedJSON(t *testing.T) {
 		"null optional slice":     bytes.Replace(valid, []byte(`"method": "timeline_overlap"`), []byte(`"method": "timeline_overlap", "candidateSpeakerIds": null`), 1),
 		"missing nullable ID":     bytes.Replace(valid, []byte("\"speakerId\": null,"), nil, 1),
 		"wrong field casing":      bytes.Replace(valid, []byte(`"startMs"`), []byte(`"StartMs"`), 1),
-		"duplicate root key":      bytes.Replace(valid, []byte(`"schemaVersion": 1`), []byte(`"schemaVersion": 2, "schemaVersion": 1`), 1),
+		"duplicate root key":      bytes.Replace(valid, []byte(`"schemaVersion": 2`), []byte(`"schemaVersion": 1, "schemaVersion": 2`), 1),
 		"duplicate nested key":    bytes.Replace(valid, []byte(`"startMs": 0`), []byte(`"startMs": 5, "startMs": 0`), 1),
 		"duplicate escaped key":   bytes.Replace(valid, []byte(`"startMs": 0`), []byte(`"start\u004ds": 5, "startMs": 0`), 1),
 		"invalid UTF-8":           bytes.Replace(valid, []byte("Hello."), []byte{0xff}, 1),
@@ -327,7 +332,7 @@ func TestMalformedJSON(t *testing.T) {
 }
 
 func TestVersionGate(t *testing.T) {
-	for _, version := range []int{0, 2, -1} {
+	for _, version := range []int{0, 3, -1} {
 		doc := example()
 		doc.SchemaVersion = version
 		if _, err := Encode(doc); !errors.Is(err, ErrUnsupportedVersion) {
@@ -347,7 +352,7 @@ func TestPrivacyBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, field := range []string{"apiKey", "authorization", "headers", "audio", "cachePath", "confidence"} {
-		for _, anchor := range []string{`"schemaVersion": 1`, `"name": "meeting.wav"`, `"turnId": 1`} {
+		for _, anchor := range []string{`"schemaVersion": 2`, `"name": "meeting.wav"`, `"turnId": 1`} {
 			data := bytes.Replace(valid, []byte(anchor), []byte(anchor+`, "`+field+`": "sensitive-value"`), 1)
 			if doc, err := Decode(data); doc != nil || !errors.Is(err, ErrInvalid) {
 				t.Fatalf("unexpected field %s accepted: %v", field, err)
@@ -389,4 +394,111 @@ func FuzzDecode(f *testing.F) {
 			t.Fatalf("accepted data did not round trip: %v", err)
 		}
 	})
+}
+
+// v1 is a sidecar written before the engine field existed.
+func v1() *Transcript {
+	doc := example()
+	doc.SchemaVersion, doc.Pipeline.Engine = 1, ""
+	return doc
+}
+
+func TestVersion1RemainsReadable(t *testing.T) {
+	data, err := Encode(v1())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"engine"`)) || !bytes.Contains(data, []byte(`"schemaVersion": 1`)) {
+		t.Fatalf("version 1 sidecar changed shape:\n%s", data)
+	}
+	doc, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := Encode(doc)
+	if err != nil || !bytes.Equal(again, data) {
+		t.Fatalf("version 1 did not round-trip unchanged: %v", err)
+	}
+}
+
+// local is a valid local-engine transcript: no Meta chunks or sources.
+func local() *Transcript {
+	doc := example()
+	doc.Pipeline = Pipeline{Engine: EngineLocal, ASRModel: "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf", ASRRevision: "pinned-revision",
+		DiarizationModel: "nemotron-3-diarization", DiarizationRevision: "pinned-revision", RuntimeVersion: "0.3.0"}
+	doc.SourceChunks = []SourceChunk{}
+	for i := range doc.Turns {
+		doc.Turns[i].Source = Source{}
+		if doc.Turns[i].Attribution.Status == Assigned {
+			doc.Turns[i].Attribution.Method = WordTimelineOverlap
+		}
+	}
+	return doc
+}
+
+func TestLocalEngine(t *testing.T) {
+	data, err := Encode(local())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(`"source"`)) || bytes.Contains(data, []byte(`"metaModel"`)) || !bytes.Contains(data, []byte(`"engine": "local"`)) {
+		t.Fatalf("local transcript carries Meta fields:\n%s", data)
+	}
+	doc, err := Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(doc, local()) {
+		t.Fatal("local transcript did not round-trip")
+	}
+	for name, change := range map[string]func(*Transcript){
+		"Meta model":         func(d *Transcript) { d.Pipeline.MetaModel = "muse" },
+		"Meta mode":          func(d *Transcript) { d.Pipeline.MetaMode = "DIARIZATION" },
+		"missing ASR model":  func(d *Transcript) { d.Pipeline.ASRModel = "" },
+		"missing revision":   func(d *Transcript) { d.Pipeline.ASRRevision = " " },
+		"Meta chunks":        func(d *Transcript) { d.SourceChunks = example().SourceChunks },
+		"Meta source":        func(d *Transcript) { d.Turns[0].Source = Source{ChunkID: "chunk_0001"} },
+		"turn-level method":  func(d *Transcript) { d.Turns[0].Attribution.Method = TimelineOverlap },
+		"zero-length assign": func(d *Transcript) { d.Turns[0].EndMS = d.Turns[0].StartMS },
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := local()
+			change(doc)
+			if err := Validate(doc); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("expected invalid data, got %v", err)
+			}
+		})
+	}
+}
+
+func TestEmptyOptionalFieldsAreRejected(t *testing.T) {
+	v1Data, err := Encode(v1())
+	if err != nil {
+		t.Fatal(err)
+	}
+	localData, err := Encode(local())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{
+		"empty engine in version 1":   bytes.Replace(v1Data, []byte(`"pipeline": {`), []byte(`"pipeline": {"engine": "",`), 1),
+		"empty local model in v1":     bytes.Replace(v1Data, []byte(`"pipeline": {`), []byte(`"pipeline": {"asrModel": "",`), 1),
+		"empty Meta model in local":   bytes.Replace(localData, []byte(`"pipeline": {`), []byte(`"pipeline": {"metaModel": "",`), 1),
+		"empty Meta mode in local":    bytes.Replace(localData, []byte(`"pipeline": {`), []byte(`"pipeline": {"metaMode": "",`), 1),
+		"empty source in local turns": bytes.Replace(localData, []byte(`"text": "Hello.",`), []byte(`"text": "Hello.", "source": {"chunkId": "", "metaTurnId": 0},`), 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if bytes.Equal(data, v1Data) || bytes.Equal(data, localData) {
+				t.Fatal("fixture was not modified")
+			}
+			if doc, err := Decode(data); doc != nil || !errors.Is(err, ErrInvalid) {
+				t.Fatalf("empty optional field accepted: %v", err)
+			}
+		})
+	}
+	for _, data := range [][]byte{v1Data, localData} {
+		if _, err := Decode(data); err != nil {
+			t.Fatalf("valid sidecar rejected: %v", err)
+		}
+	}
 }

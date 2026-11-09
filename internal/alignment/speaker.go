@@ -45,8 +45,7 @@ func Align(ctx context.Context, input *transcript.Transcript, timeline diarizati
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// A share above half guarantees a single main speaker.
-	if policy.MinSharePercent <= 50 || policy.MinSharePercent > 100 || policy.MinCoveragePercent < 1 || policy.MinCoveragePercent > 100 {
+	if !policy.valid() {
 		return nil, ErrAlignment
 	}
 	if err := transcript.Validate(input); err != nil {
@@ -81,39 +80,16 @@ func Align(ctx context.Context, input *transcript.Transcript, timeline diarizati
 			return nil, err
 		}
 		start, end := time.Duration(turn.StartMS)*time.Millisecond, time.Duration(turn.EndMS)*time.Millisecond
-		var candidates []string
-		var best, total time.Duration
-		main, tied := -1, false
-		for s, intervals := range spans {
-			if start == end {
-				break
-			}
-			first := sort.Search(len(intervals), func(j int) bool { return intervals[j].end > start })
-			var overlap time.Duration
-			for j := first; j < len(intervals) && intervals[j].start < end; j++ {
-				if err := ctx.Err(); err != nil {
-					return nil, err
-				}
-				overlap += min(end, intervals[j].end) - max(start, intervals[j].start)
-			}
-			if overlap <= 0 {
-				continue
-			}
-			candidates = append(candidates, timeline.Speakers[s].ID)
-			total = min(total, math.MaxInt64-overlap) + overlap // saturate instead of overflowing
-			switch {
-			case overlap > best:
-				best, main, tied = overlap, s, false
-			case overlap == best:
-				tied = true
-			}
+		d, err := attribute(ctx, spans, start, end, policy)
+		if err != nil {
+			return nil, err
 		}
 		turn.SpeakerID = nil
-		turn.Attribution = transcript.Attribution{Status: transcript.Unknown, Reason: transcript.AmbiguousOverlapOrBoundary, CandidateSpeakerIDs: candidates}
+		turn.Attribution = transcript.Attribution{Status: transcript.Unknown, Reason: transcript.AmbiguousOverlapOrBoundary, CandidateSpeakerIDs: d.candidateIDs(timeline)}
 		if start == end {
 			turn.Attribution.Reason = transcript.InsufficientTiming
-		} else if main >= 0 && !tied && best >= percentOf(total, policy.MinSharePercent) && best >= percentOf(end-start, policy.MinCoveragePercent) {
-			id := timeline.Speakers[main].ID
+		} else if d.main >= 0 {
+			id := timeline.Speakers[d.main].ID
 			turn.SpeakerID = &id
 			turn.Attribution = transcript.Attribution{Status: transcript.Assigned, Method: transcript.TimelineOverlap}
 		}
@@ -126,6 +102,66 @@ func Align(ctx context.Context, input *transcript.Transcript, timeline diarizati
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (p Policy) valid() bool {
+	// A share above half guarantees a single main speaker.
+	return p.MinSharePercent > 50 && p.MinSharePercent <= 100 && p.MinCoveragePercent >= 1 && p.MinCoveragePercent <= 100
+}
+
+// decision is the policy's verdict on one interval: main is the index of the
+// assigned timeline speaker, or -1; candidates lists, in timeline order, the
+// indices of every speaker heard in the interval.
+type decision struct {
+	main       int
+	candidates []int
+}
+
+func (d decision) candidateIDs(timeline diarization.Timeline) []string {
+	if len(d.candidates) == 0 {
+		return nil
+	}
+	ids := make([]string, len(d.candidates))
+	for i, s := range d.candidates {
+		ids[i] = timeline.Speakers[s].ID
+	}
+	return ids
+}
+
+// attribute applies the policy to [start, end). An empty interval has no
+// candidates and is never assigned.
+func attribute(ctx context.Context, spans [][]speakerSpan, start, end time.Duration, policy Policy) (decision, error) {
+	d := decision{main: -1}
+	if start >= end {
+		return d, nil
+	}
+	var best, total time.Duration
+	main, tied := -1, false
+	for s, intervals := range spans {
+		first := sort.Search(len(intervals), func(j int) bool { return intervals[j].end > start })
+		var overlap time.Duration
+		for j := first; j < len(intervals) && intervals[j].start < end; j++ {
+			if err := ctx.Err(); err != nil {
+				return decision{}, err
+			}
+			overlap += min(end, intervals[j].end) - max(start, intervals[j].start)
+		}
+		if overlap <= 0 {
+			continue
+		}
+		d.candidates = append(d.candidates, s)
+		total = min(total, math.MaxInt64-overlap) + overlap // saturate instead of overflowing
+		switch {
+		case overlap > best:
+			best, main, tied = overlap, s, false
+		case overlap == best:
+			tied = true
+		}
+	}
+	if main >= 0 && !tied && best >= percentOf(total, policy.MinSharePercent) && best >= percentOf(end-start, policy.MinCoveragePercent) {
+		d.main = main
+	}
+	return d, nil
 }
 
 // percentOf returns ceil(d*percent/100) without overflowing long durations.

@@ -13,8 +13,8 @@ import (
 )
 
 func addCommands(root *cobra.Command, version string, code *int, stdout io.Writer) {
-	addSetupCommands(root, code, func(dir string, onProgress func(setup.Progress)) setupService {
-		return setup.Manager{Dir: dir, OnProgress: onProgress}
+	addSetupCommands(root, code, func(dir string, models []string, onProgress func(setup.Progress)) setupService {
+		return setup.Manager{Dir: dir, Models: models, OnProgress: onProgress}
 	}, credentials.Provider{}.Status)
 	root.AddCommand(&cobra.Command{
 		Use: "version", Short: "Print the application version", Args: cobra.NoArgs,

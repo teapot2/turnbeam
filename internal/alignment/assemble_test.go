@@ -38,7 +38,7 @@ func newFixture(forced bool, cut int64) fixture {
 	}
 	return fixture{
 		recording: transcript.Recording{Name: "public.wav", DurationMS: cut + 1000, SHA256: strings.Repeat("a", 64)},
-		pipeline:  transcript.Pipeline{MetaModel: meta.Model, MetaMode: meta.Diarization, DiarizationModel: "local", DiarizationRevision: "pinned", RuntimeVersion: "pinned"},
+		pipeline:  transcript.Pipeline{Engine: transcript.EngineMeta, MetaModel: meta.Model, MetaMode: meta.Diarization, DiarizationModel: "local", DiarizationRevision: "pinned", RuntimeVersion: "pinned"},
 		plan:      plan, results: results,
 	}
 }

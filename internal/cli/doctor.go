@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/teapot2/turnbeam/internal/credentials"
@@ -35,7 +36,8 @@ func runDoctor(cmd *cobra.Command, service setupService, keys keyStatus, dir str
 	}
 	checks, err := service.Doctor(cmd.Context())
 	if err == nil || errors.Is(err, setup.ErrDoctorFailed) {
-		checks = append(checks, keyCheck(cmd.Context(), keys))
+		local := slices.ContainsFunc(checks, func(c setup.Check) bool { return c.OK && c.LocalModel != "" })
+		checks = append(checks, keyCheck(cmd.Context(), keys, local))
 	}
 	failed := false
 	for _, check := range checks {
@@ -58,14 +60,18 @@ func runDoctor(cmd *cobra.Command, service setupService, keys keyStatus, dir str
 	return err
 }
 
-func keyCheck(ctx context.Context, keys keyStatus) setup.Check {
+// keyCheck reports the Meta API key. With a local model installed, a missing
+// key is not a failure: Turnbeam can still transcribe without Meta.
+func keyCheck(ctx context.Context, keys keyStatus, localModel bool) setup.Check {
 	check := setup.Check{Name: "Meta API key"}
 	source, available, err := keys(ctx)
 	switch {
 	case err != nil:
 		check.Message, check.Fix = "could not be read", "unlock your login keychain, or set META_API_KEY"
+	case !available && localModel:
+		check.Message, check.OK = "not configured (only --model meta needs one)", true
 	case !available:
-		check.Message, check.Fix = "not configured", "run `turnbeam key set`, or set META_API_KEY"
+		check.Message, check.Fix = "not configured", "run `turnbeam key set`, or set META_API_KEY, or install a local model with `turnbeam setup --model parakeet`"
 	case source == credentials.Environment:
 		check.Message, check.OK = "from the META_API_KEY environment variable", true
 	default:

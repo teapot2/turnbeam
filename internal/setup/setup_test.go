@@ -29,6 +29,7 @@ import (
 
 const nativeDoctor = `{"version":"0.3.0","accelerator_available":true,"accelerator_compiled":true,"driver_runtime_compatible":true,"features":{"backend_metal":true,"diarization":true},"devices":[{"name":"MTL0","description":"Apple test GPU","type":"gpu"}]}`
 const nativeModel = `{"architecture":"sortformer","role":"diarization","runtime_compatible":true,"errors":[]}`
+const nativeASRModel = `{"architecture":"asr","role":"asr","runtime_compatible":true,"errors":[]}`
 
 func TestDefaultDirPreservesInstallationLocation(t *testing.T) {
 	base, err := os.UserConfigDir()
@@ -111,6 +112,18 @@ func newFixture(t *testing.T, mode string) *fixture {
 		w.Write(body)
 	}))
 	t.Cleanup(server.Close)
+	for i := range c.models {
+		model := &c.models[i]
+		model.assets = slices.Clone(model.assets)
+		for j := range model.assets {
+			a := &model.assets[j]
+			body := []byte("local fixture " + a.name)
+			sum := sha256.Sum256(body)
+			a.sha256, a.size = hex.EncodeToString(sum[:]), int64(len(body))
+			f.bodies["/"+a.name] = body
+			a.url = server.URL + "/" + a.name
+		}
+	}
 	for i := range c.assets {
 		c.assets[i].url = server.URL + "/" + c.assets[i].name
 	}
@@ -154,6 +167,9 @@ func TestSetupProcess(t *testing.T) {
 	data := nativeDoctor
 	if len(args) > 1 && args[1] == "model" {
 		data = nativeModel
+		if strings.HasPrefix(filepath.Base(args[len(args)-1]), "asr-") {
+			data = nativeASRModel
+		}
 		if mode == "mismatch" {
 			data = strings.Replace(data, `"runtime_compatible":true`, `"runtime_compatible":false`, 1)
 		}
@@ -227,11 +243,11 @@ func TestInstallVerifyDoctorAndReuse(t *testing.T) {
 		t.Fatalf("wrong download/check count: %d, %d", f.hits.Load(), f.native.Load())
 	}
 	got, err := f.manager.Verify(context.Background())
-	if err != nil || got != installed {
+	if err != nil || !reflect.DeepEqual(got, installed) {
 		t.Fatalf("installed pair did not verify: %+v, %v", got, err)
 	}
 	again, err := f.manager.Install(context.Background())
-	if err != nil || again != installed || f.hits.Load() != 4 {
+	if err != nil || !reflect.DeepEqual(again, installed) || f.hits.Load() != 4 {
 		t.Fatalf("idempotent install downloaded or changed data: %+v, %v", again, err)
 	}
 	checks, err := f.manager.Doctor(context.Background())
@@ -262,7 +278,7 @@ func TestReadyVerifiesBeforeNativeChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	ready, err := f.manager.Ready(context.Background())
-	if err != nil || ready != installed || f.hits.Load() != 4 {
+	if err != nil || !reflect.DeepEqual(ready, installed) || f.hits.Load() != 4 {
 		t.Fatalf("ready resolution changed installation or downloaded files: %+v, %v", ready, err)
 	}
 	before := f.native.Load()
@@ -378,7 +394,7 @@ func TestFailedUpgradeKeepsPreviousPointer(t *testing.T) {
 	if _, err := upgrade.Install(context.Background()); err == nil {
 		t.Fatal("missing new asset unexpectedly installed")
 	}
-	if got, err := f.manager.Verify(context.Background()); err != nil || got != installed {
+	if got, err := f.manager.Verify(context.Background()); err != nil || !reflect.DeepEqual(got, installed) {
 		t.Fatalf("failed upgrade damaged previous installation: %+v, %v", got, err)
 	}
 	assertNoStaging(t, f.manager.Dir)
@@ -894,5 +910,136 @@ func TestArchiveRejectsEntriesUnderSymlinkedFolders(t *testing.T) {
 				t.Fatal("entry under a symlinked folder was accepted:", err)
 			}
 		})
+	}
+}
+
+func localChecks(t *testing.T, m Manager) []Check {
+	t.Helper()
+	checks, _ := m.Doctor(context.Background())
+	var local []Check
+	for _, check := range checks {
+		if strings.HasPrefix(check.Name, "Local model") {
+			local = append(local, check)
+		}
+	}
+	if len(local) == 0 {
+		t.Fatal("doctor has no local model check")
+	}
+	return local
+}
+
+func TestLocalModelsAreOptionalAndInstalledSideBySide(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "")
+	base, err := f.manager.Install(ctx)
+	if err != nil || base.ASRModels != nil || f.hits.Load() != 4 {
+		t.Fatalf("base install: %+v, %v, %d downloads", base, err, f.hits.Load())
+	}
+	if checks := localChecks(t, f.manager); len(checks) != 1 || !checks[0].OK || checks[0].LocalModel != "" || !strings.Contains(checks[0].Message, "none installed") {
+		t.Fatalf("missing optional models must not fail doctor: %+v", checks)
+	}
+	parakeet := f.manager
+	parakeet.Models = []string{"parakeet"}
+	if _, err := parakeet.Verify(ctx); !errors.Is(err, ErrLocalModel) || !strings.Contains(err.Error(), "turnbeam setup --model parakeet") {
+		t.Fatalf("verification without the model: %v", err)
+	}
+	installed, err := parakeet.Install(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only Parakeet's three files are downloaded; the rest is copied from before.
+	if f.hits.Load() != 7 || installed.ASRModels["parakeet"] != filepath.Join(installed.Directory, "asr-parakeet.gguf") || len(installed.ASRModels) != 1 {
+		t.Fatalf("parakeet install: %+v, %d downloads", installed, f.hits.Load())
+	}
+	if got, err := parakeet.Ready(ctx); err != nil || !reflect.DeepEqual(got, installed) {
+		t.Fatalf("parakeet not ready: %+v, %v", got, err)
+	}
+	nemotron := f.manager
+	nemotron.Models = []string{"nemotron-3.5"}
+	if _, err := nemotron.Ready(ctx); !errors.Is(err, ErrLocalModel) {
+		t.Fatalf("an uninstalled model was ready: %v", err)
+	}
+	// Adding a second model keeps the first and downloads only the new files.
+	both, err := nemotron.Install(ctx)
+	if err != nil || f.hits.Load() != 9 || len(both.ASRModels) != 2 {
+		t.Fatalf("second model: %+v, %v, %d downloads", both, err, f.hits.Load())
+	}
+	statuses, err := f.manager.LocalStatus(ctx)
+	if err != nil || len(statuses) != 2 || !statuses[0].Installed || !statuses[1].Installed {
+		t.Fatalf("status: %+v, %v", statuses, err)
+	}
+	if checks := localChecks(t, f.manager); len(checks) != 2 || checks[0].LocalModel != "parakeet" || checks[1].LocalModel != "nemotron-3.5" {
+		t.Fatalf("installed models not reported: %+v", checks)
+	}
+	// A plain setup run keeps both and downloads nothing.
+	again, err := f.manager.Install(ctx)
+	if err != nil || again.Directory != both.Directory || len(again.ASRModels) != 2 || f.hits.Load() != 9 {
+		t.Fatalf("plain setup changed the local models: %+v, %v", again, err)
+	}
+	unknown := f.manager
+	unknown.Models = []string{"whisper"}
+	if _, err := unknown.Install(ctx); !errors.Is(err, ErrUnknownModel) {
+		t.Fatalf("unknown model: %v", err)
+	}
+	if err := os.WriteFile(both.ASRModels["parakeet"], []byte("damaged"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parakeet.Ready(ctx); !errors.Is(err, ErrLocalModel) {
+		t.Fatalf("damaged model accepted: %v", err)
+	}
+	if _, err := nemotron.Ready(ctx); err != nil {
+		t.Fatalf("damage to one model blocked another: %v", err)
+	}
+	if _, err := f.manager.Ready(ctx); err != nil {
+		t.Fatalf("a damaged optional model blocked the Meta engine: %v", err)
+	}
+	if statuses, _ := f.manager.LocalStatus(ctx); statuses[0].Installed || statuses[0].Err == nil {
+		t.Fatalf("damaged model status: %+v", statuses[0])
+	}
+	if _, err := f.manager.Doctor(ctx); !errors.Is(err, ErrDoctorFailed) {
+		t.Fatalf("doctor accepted a damaged local model: %v", err)
+	}
+	if checks := localChecks(t, f.manager); checks[0].OK || !strings.Contains(checks[0].Fix, "--model parakeet") {
+		t.Fatalf("damaged model not reported: %+v", checks)
+	}
+	// A missing notice makes a model damaged, not uninstalled.
+	if err := os.Remove(filepath.Join(both.Directory, "ASR-NEMOTRON-3.5-CARD.md")); err != nil {
+		t.Fatal(err)
+	}
+	if statuses, _ := f.manager.LocalStatus(ctx); statuses[1].Installed || statuses[1].Err == nil {
+		t.Fatalf("model without its card: %+v", statuses[1])
+	}
+	// A plain setup repairs both, downloading only the two broken files.
+	repaired, err := f.manager.Install(ctx)
+	if err != nil || len(repaired.ASRModels) != 2 || f.hits.Load() != 11 {
+		t.Fatalf("plain setup did not repair the models: %+v, %v, %d downloads", repaired, err, f.hits.Load())
+	}
+	if _, err := parakeet.Ready(ctx); err != nil {
+		t.Fatalf("parakeet not repaired: %v", err)
+	}
+	if _, err := nemotron.Ready(ctx); err != nil {
+		t.Fatalf("nemotron not repaired: %v", err)
+	}
+}
+
+func TestLocalModelCatalog(t *testing.T) {
+	seen := map[string]bool{}
+	for _, model := range LocalModels() {
+		found, ok := FindLocalModel(model.Name)
+		if !ok || found.Name != model.Name || model.Size() <= 0 || model.Title == "" || model.File == "" || model.License == "" || model.Latency < 0 {
+			t.Fatalf("incomplete model entry: %+v", model)
+		}
+		for _, a := range model.assets {
+			if seen[a.name] || !strings.HasPrefix(a.url, "https://") || len(a.sha256) != 64 {
+				t.Fatalf("model asset %q is shared or not pinned", a.name)
+			}
+			seen[a.name] = true
+		}
+		if model.Name == "meta" {
+			t.Fatal("meta is not a local model")
+		}
+	}
+	if _, ok := FindLocalModel("whisper"); ok {
+		t.Fatal("unknown model found")
 	}
 }
